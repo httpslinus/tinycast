@@ -12,6 +12,7 @@ struct RootPaletteView: View {
     @Environment(CurrencyRateStore.self) private var currencyRates
     @Environment(EmojiIndex.self) private var emojiIndex
     @Environment(FrequentEmojiStore.self) private var frequentEmoji
+    @Environment(KeePassCoordinator.self) private var keepass
     @Environment(FileSearchSession.self) private var fileSearch
     @Environment(CalendarStore.self) private var calendarStore
     /// Observed so the join card's countdown redraws on the minute boundary.
@@ -71,6 +72,8 @@ struct RootPaletteView: View {
             return EmojiScreen(
                 index: emojiIndex, frequent: frequentEmoji, core: core, vm: vm,
                 tone: settings.emojiSkinTone, openActions: openActions)
+        case .keepass:
+            return KeePassScreen(coordinator: keepass, vm: vm, openActions: openActions)
         case .fileSearch:
             return FileSearchScreen(
                 session: fileSearch, core: core, vm: vm, openActions: openActions)
@@ -132,6 +135,15 @@ struct RootPaletteView: View {
             })
     }
 
+    private var keepassFolderContent: PopoverMenuContent {
+        PopoverMenuContent(items: ([""] + keepass.folders).map { folder in
+            PopoverMenuItem(
+                title: folder.isEmpty ? "All Folders" : folder,
+                systemImage: folder == keepass.folder ? "checkmark" : "folder"
+            ) { keepass.selectFolder(folder) }
+        })
+    }
+
     /// Every model configured for chat; selecting one updates the app-wide default route.
     private var aiModelContent: PopoverMenuContent {
         let options = core.aiChatCoordinator.modelOptions
@@ -150,14 +162,10 @@ struct RootPaletteView: View {
             })
     }
 
-    /// The bottom-left app menu content (About / Support / Settings).
     private var appMenuContent: PopoverMenuContent {
         PopoverMenuContent(items: [
             PopoverMenuItem(title: "About Tinycast", systemImage: "info.circle") {
                 core.settingsCoordinator.showAbout()
-            },
-            PopoverMenuItem(title: "Support Tinycast", systemImage: "heart") {
-                core.supportCoordinator.showSupport()
             },
             PopoverMenuItem(title: "Settings", systemImage: "gearshape", shortcut: "⌘,") {
                 core.settingsCoordinator.showSettings()
@@ -176,6 +184,10 @@ struct RootPaletteView: View {
         case .app:
             return PaletteMenuContent(
                 popover: appMenuContent, selection: $menuSelection, onActivate: activateMenuItem)
+        case .keepassFolder:
+            return PaletteMenuContent(
+                popover: keepassFolderContent, selection: $menuSelection,
+                width: Theme.Size.menuWidth, onActivate: activateMenuItem)
         case .clipboardFilter:
             return PaletteMenuContent(
                 popover: clipboardFilterContent, selection: $menuSelection,
@@ -195,10 +207,11 @@ struct RootPaletteView: View {
         let sel = selection(count: count)
         // The argument forms have no rows to count, but ↵ still does something.
         let showActionGroup =
-            (count > 0 || vm.mode.isArgumentForm) && screen.hasPrimaryAction(at: sel)
+            (count > 0 || vm.mode.isArgumentForm || screen.hasActionsWithoutRows)
+            && screen.hasPrimaryAction(at: sel)
 
         // One header position, so focus survives the swap. See docs/features/palette.md.
-        return Group {
+        let content = Group {
             if isCollapsed {
                 Color.clear
             } else {
@@ -230,10 +243,14 @@ struct RootPaletteView: View {
         .background(Theme.Colors.panelScrim)
         .background(VisualEffectView())
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
+        let observedContent = content
         // Every show bumps focusToken: refocus search and drop any menu left open.
         .onChange(of: vm.focusToken) {
-            searchFocused = true
+            searchFocused = vm.mode != .keepass || !keepass.isShowingForm
             openMenu = nil
+        }
+        .onChange(of: keepass.isShowingForm) {
+            if vm.mode == .keepass { searchFocused = !keepass.isShowingForm }
         }
         .onChange(of: vm.query) {
             vm.selection = 0
@@ -288,6 +305,7 @@ struct RootPaletteView: View {
         .onChange(of: core.paletteCoordinator.paletteIsCollapsed) {
             core.paletteCoordinator.syncPaletteSize()
         }
+        return observedContent
         // Repeat included: holding the key keeps stepping, as the bare-key form does.
         .onKeyPress(keys: [.downArrow], phases: [.down, .repeat]) { press in
             if let reorder = moveFavorite(1, modifiers: press.modifiers) { return reorder }
@@ -343,6 +361,10 @@ struct RootPaletteView: View {
             return screen.pasteKeepingWindowOpen(at: selection) ? .handled : .ignored
         }
         .onKeyPress(.escape) {
+            if vm.mode == .keepass, keepass.isShowingAutoLockSettings {
+                keepass.closeAutoLockSettings()
+                return .handled
+            }
             switch PaletteEscapeAction.resolve(menuOpen: menuOpen, query: vm.query, mode: vm.mode) {
             case .closeMenu:
                 closeMenus()
@@ -358,6 +380,7 @@ struct RootPaletteView: View {
             return .handled
         }
         .onKeyPress(.tab) {
+            if vm.mode == .keepass, keepass.isShowingForm { return .ignored }
             if !menuOpen { advanceTabFocus() }
             return .handled
         }
@@ -365,6 +388,15 @@ struct RootPaletteView: View {
             ExtensionShortcutKeys(
                 screen: menuOpen ? nil : screen as? ExtensionCommandScreen, selection: sel)
         )
+        .onKeyPress(phases: .down) { press in
+            guard openMenu == nil || openMenu == .actions, let keepass = screen as? KeePassScreen,
+                keepass.dispatchShortcut(
+                    key: ASCIIKeyboardLayout.keyEquivalent(fallingBackTo: press.key),
+                    modifiers: press.modifiers, at: selection(in: keepass))
+            else { return .ignored }
+            closeMenus()
+            return .handled
+        }
         // ⌘K toggles the actions panel for the current selection.
         .onKeyPress(phases: .down) { press in
             guard press.modifiers.contains(.command),
@@ -373,7 +405,7 @@ struct RootPaletteView: View {
             // The Actions menu has no anchor in the compact bar, so swallow ⌘K there.
             guard !isCollapsed else { return .handled }
             let screen = screen
-            guard !screen.rows.isEmpty else { return .handled }
+            guard !screen.rows.isEmpty || screen.hasActionsWithoutRows else { return .handled }
             // An error calc card is the selection but has no actions — don't open an empty panel.
             guard screen.hasPrimaryAction(at: selection(in: screen)) else { return .handled }
             toggleActions()
@@ -502,6 +534,7 @@ struct RootPaletteView: View {
             headerGutter(width: Theme.Spacing.md)
             // One structural position: a field inside a branch loses first responder when it flips.
             searchField.frame(width: headerAccessory.map(searchFieldWidth))
+                .disabled(vm.mode == .keepass && keepass.isShowingForm)
             if let accessory = headerAccessory {
                 accessory.view
                 Spacer(minLength: 0)
@@ -511,6 +544,20 @@ struct RootPaletteView: View {
                 aiChatTabHint
             }
             // Keyed off the mode, which says which screen is up; the field just flexes narrower.
+            if vm.mode == .keepass, !keepass.isShowingForm {
+                headerGutter(width: Theme.Spacing.md)
+                HeaderMenuButton(
+                    title: keepass.folder.isEmpty ? "All Folders" : keepass.folder,
+                    systemImage: "folder", isOpen: openMenu == .keepassFolder,
+                    help: "Filter entries by folder"
+                ) {
+                    if openMenu == .keepassFolder { closeMenus() } else {
+                        let active = ([""] + keepass.folders).firstIndex(of: keepass.folder) ?? 0
+                        open(.keepassFolder, highlighting: active)
+                    }
+                }
+                .frame(maxWidth: Theme.Size.clipboardFilterMenuWidth)
+            }
             if !isCollapsed, vm.mode == .clipboard {
                 headerGutter(width: Theme.Spacing.md)
                 ClipboardFilterButton(
@@ -586,6 +633,9 @@ struct RootPaletteView: View {
 
     /// In the argument form the field is that argument's input, so it names the argument.
     private var searchPrompt: String {
+        if vm.mode == .keepass, keepass.isShowingForm {
+            return keepass.isShowingAutoLockSettings ? "Auto-lock" : "KeePass"
+        }
         // The field is only wide enough for the caret while argument fields are beside it.
         if headerAccessory != nil, vm.mode != .ai { return "" }
         if vm.mode == .quicklinkArguments { return quicklinkArguments.prompt }
@@ -761,7 +811,7 @@ struct RootPaletteView: View {
         switch openMenu {
         case .app: .bottomLeading
         case .actions: .bottomTrailing
-        case .clipboardFilter, .aiModel: .belowHeaderTrailing
+        case .clipboardFilter, .aiModel, .keepassFolder: .belowHeaderTrailing
         case nil: nil
         }
     }
@@ -823,7 +873,9 @@ struct RootPaletteView: View {
         content.activate(index)
         closeMenus()
         // A mouse click on a row takes the caret with it; menus close back into the field.
-        if argumentFocused == nil { searchFocused = true }
+        if argumentFocused == nil {
+            searchFocused = vm.mode != .keepass || !keepass.isShowingForm
+        }
     }
 
     /// ⌘. — mirrors the Actions row, and works while that menu is open like the rest.
@@ -834,6 +886,8 @@ struct RootPaletteView: View {
             _ = clipboard.pin(at: selection)
         } else if let quicklinks = screen as? QuicklinkListScreen {
             _ = quicklinks.pin(at: selection)
+        } else if let keepass = screen as? KeePassScreen, openMenu == nil || openMenu == .actions {
+            if keepass.dispatchShortcut(key: ".", modifiers: .command, at: selection) { closeMenus() }
         }
     }
 
@@ -868,6 +922,10 @@ struct RootPaletteView: View {
     }
 
     private func navigateBack() {
+        if vm.mode == .keepass, keepass.isShowingAutoLockSettings {
+            keepass.closeAutoLockSettings()
+            return
+        }
         if vm.mode == .aiHistory {
             vm.prepare(mode: .ai)
         } else {
@@ -904,6 +962,7 @@ private enum OpenMenu {
     case actions
     case app
     case clipboardFilter
+    case keepassFolder
     case aiModel
 }
 

@@ -1,5 +1,4 @@
-import { Heart } from "lucide-react";
-import { hero, site } from "../data/site";
+import { hero } from "../data/site";
 import { AppShot } from "./app-shot";
 import { Button } from "./ui/button";
 import { AppleLogo } from "./ui/icon";
@@ -52,7 +51,6 @@ export function Hero() {
           {hero.sub}
         </p>
 
-        {/* Two, not three: View source moved to the nav's icon row. */}
         <div
           className="rise mt-10 flex flex-wrap items-center justify-center gap-3"
           style={{ animationDelay: "240ms" }}
@@ -60,15 +58,6 @@ export function Hero() {
           <Button href="/#install" size="lg" className="gap-2">
             <AppleLogo size={20} />
             Download for Mac
-          </Button>
-          <Button
-            href={site.support}
-            variant="ghost"
-            size="lg"
-            className="gap-2"
-          >
-            <Heart size={18} />
-            Support
           </Button>
         </div>
 

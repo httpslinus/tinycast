@@ -3,18 +3,6 @@
 A tiny, fully native macOS launcher — the essentials, without the bloat.
 
 <p align="center">
-  <a href="https://discord.gg/v2Eeb4QQy3">
-    <img alt="Join the Tinycast Discord"
-         src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=flat&logo=discord&logoColor=white"></a>
-  <a href="mailto:iabueammar@gmail.com?subject=Hiring%20enquiry">
-    <img alt="Hire me — iabueammar@gmail.com"
-         src="https://img.shields.io/badge/Hire%20me-Let's%20talk-111111?style=flat&logo=gmail&logoColor=white"></a>
-  <a href="LICENSE">
-    <img alt="License: AGPL-3.0"
-         src="https://img.shields.io/badge/License-AGPL--3.0-3DA639?style=flat"></a>
-</p>
-
-<p align="center">
   <img src="docs/screenshot.png" alt="Tinycast command palette" width="720">
 </p>
 
@@ -23,17 +11,6 @@ CPU churn. Just SwiftUI + AppKit with zero dependencies. It's fast because there
 
 It also **runs Raycast extensions** — the real ones, rendered as native SwiftUI. No Node.js, no
 browser: JavaScriptCore ships with macOS, so that costs no extra binary size.
-
-## Support
-
-Tinycast is free, and it stays that way. If it earns a place in your daily flow, a one-off tip helps
-keep it actively maintained. GitHub Sponsors isn't available in my country, so please support here:
-
-<p align="center">
-  <a href="https://buy.polar.sh/polar_cl_NDVFC20DKQpLcNawsh97QzbARBXD3WNn8v35R0mbJmT">
-    <img alt="Support Tinycast" width="188" height="44" src="docs/support-button.svg"></a><br>
-  <sub>Payments are handled securely by <a href="https://polar.sh">Polar.sh</a>.</sub>
-</p>
 
 ## Features
 
@@ -56,6 +33,8 @@ keep it actively maintained. GitHub Sponsors isn't available in my country, so p
   files, and more.
 - **Calendar and meetings** — your next meeting on the empty palette and in the menu bar, one key to
   join it, or let it join itself.
+- **KeePass** — native database unlocking and search, with password/key-file support, one-time codes,
+  favorites and protected copy/paste. Uses the installed KeePassXC CLI; no extension or JavaScript.
 - **Notes** — an unlimited collection of plain Markdown files in one floating editor, searchable from
   the palette.
 - **Emoji picker** — a searchable emoji grid, one keystroke away.
@@ -117,7 +96,7 @@ standards, the design system and one document per feature.
 
 > [!IMPORTANT]
 > **Open an issue before you write code — this is mandatory.** Get the bug or the feature agreed on
-> first; discussing it in the issue (or on [Discord](https://discord.gg/v2Eeb4QQy3)) is strongly
+> first; discussing it in the issue is strongly
 > encouraged. A PR with no agreed issue behind it gets closed however good the patch is, and the
 > work is wasted. Typo and docs-only fixes are the one exception.
 
@@ -126,8 +105,8 @@ the before/after video requirement for visual changes, and why features get decl
 in the **[pull request template](.github/PULL_REQUEST_TEMPLATE.md)**. Security issues go through
 [SECURITY.md](SECURITY.md), not the issue tracker.
 
-Questions, ideas, or just want to follow along? **[Join the Discord](https://discord.gg/v2Eeb4QQy3)**.
-
 ## License
 
 [AGPL-3.0](LICENSE)
+
+This project is a fork of [Tinycast by abue-ammar](https://github.com/abue-ammar/tinycast).

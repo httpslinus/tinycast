@@ -376,6 +376,12 @@ enum SettingsSearchCatalog {
     ]
 
     private static let emoji: [SettingsSearchEntry] = [
+        .init(pane: .keepass, keywords: ["password", "vault", "keepassxc", "kdbx"]),
+        .init(.keepassGlobalShortcuts, "Search KeePass", keywords: ["hotkey", "shortcut"]),
+        .init(.keepassDatabase, "Database", keywords: ["kdbx", "file", "choose"]),
+        .init(.keepassDatabase, "Key File", keywords: ["authentication", "optional"]),
+        .init(.keepassSecurity, "Auto-lock", keywords: ["timeout", "inactivity", "never"]),
+
         .init(
             pane: .emoji,
             keywords: ["picker", "character", "unicode", "smiley"]),
@@ -491,13 +497,7 @@ enum SettingsSearchCatalog {
             pane: .about,
             keywords: ["version", "licence", "license", "credits"]),
         .init(
-            .aboutAbout, "Check for Updates",
-            keywords: ["version", "upgrade", "release"]),
-        .init(
             group: .aboutLinks, "Links",
-            keywords: ["github", "source", "issues", "website"]),
-        .init(
-            .aboutLinks, "Support",
-            keywords: ["donate", "sponsor", "funding"])
+            keywords: ["github", "source", "issues", "website"])
     ]
 }

@@ -132,6 +132,17 @@ export class Buffer extends Uint8Array {
     return value instanceof Uint8Array;
   }
 
+  static compare(left, right) {
+    if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array)) {
+      throw new TypeError("Buffer.compare expects Buffer or Uint8Array arguments");
+    }
+    const length = Math.min(left.length, right.length);
+    for (let index = 0; index < length; index++) {
+      if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1;
+    }
+    return left.length === right.length ? 0 : left.length < right.length ? -1 : 1;
+  }
+
   static byteLength(value, encoding) {
     if (typeof value === "string") return encode(value, encoding).length;
     return value?.length ?? 0;
@@ -152,6 +163,22 @@ export class Buffer extends Uint8Array {
     return true;
   }
 
+  copy(target, targetStart = 0, sourceStart = 0, sourceEnd = this.length) {
+    if (!(target instanceof Uint8Array)) {
+      throw new TypeError("Buffer.copy expects a Buffer or Uint8Array target");
+    }
+    targetStart = copyOffset(targetStart);
+    sourceStart = copyOffset(sourceStart);
+    sourceEnd = copyOffset(sourceEnd);
+    if (targetStart < 0 || sourceStart < 0 || sourceStart > this.length || sourceEnd < 0) {
+      throw new RangeError("Buffer.copy offset out of range");
+    }
+    const count = Math.min(sourceEnd, this.length, sourceStart + target.length - targetStart) - sourceStart;
+    if (count <= 0) return 0;
+    target.set(this.subarray(sourceStart, sourceStart + count), targetStart);
+    return count;
+  }
+
   write(text, offset = 0, length, encoding) {
     if (typeof length === "string") {
       encoding = length;
@@ -166,6 +193,12 @@ export class Buffer extends Uint8Array {
   slice(start, end) {
     return wrap(this.subarray(start, end));
   }
+}
+
+function copyOffset(value) {
+  if (Number.isInteger(value)) return value;
+  const number = +value;
+  return Number.isFinite(number) && Math.abs(number) <= Number.MAX_SAFE_INTEGER ? Math.floor(number) : 0;
 }
 
 /// `new Uint8Array(...)` results need the Buffer prototype grafted on: subclassing Uint8Array and

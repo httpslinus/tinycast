@@ -30,6 +30,7 @@ open with an `## Invariants` section; read it before changing anything in that a
 [calculator](features/calculator.md) ·
 [calendar](features/calendar.md) ·
 [emoji](features/emoji.md) ·
+[KeePass](features/keepass.md) ·
 [file search](features/file-search.md) ·
 [notes](features/notes.md) ·
 [snippets](features/snippets.md) ·
@@ -40,9 +41,7 @@ open with an `## Invariants` section; read it before changing anything in that a
 [uninstall](features/uninstall.md) ·
 [backup](features/backup.md) ·
 [Raycast import](features/raycast-import.md) ·
-[Raycast extensions](features/extensions.md) ·
-[updates](features/updates.md) ·
-[support](features/support.md)
+[Raycast extensions](features/extensions.md)
 
 ## Contributing
 

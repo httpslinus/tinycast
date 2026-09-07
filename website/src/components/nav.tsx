@@ -40,7 +40,6 @@ export function Nav() {
             </div>
 
             <div className="hidden items-center gap-2 md:flex">
-              {/* Moved out of the hero, so its pair stays Download and Support. */}
               <a
                 href={site.repo}
                 target="_blank"

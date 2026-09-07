@@ -1,6 +1,6 @@
 #!/bin/bash
 # Compose a release body from GitHub's generated notes. Usage: ./Scripts/release-notes.sh <body.md> <discord.md>
-# The changelog goes above the install marker; the app shows only that half. See docs/release.md.
+# The changelog goes above the install marker; install instructions follow it. See docs/release.md.
 set -euo pipefail
 
 BODY_OUT="${1:?usage: release-notes.sh <body.md> <discord.md>}"
@@ -15,7 +15,7 @@ DISPLAY_NAME="${DISPLAY_NAME:-Tinycast}"
 BUNDLE_ID="${BUNDLE_ID:-com.tinycast.app}"
 CASK="${CASK:-tinycast}"
 
-# Everything below this line is for the download page; the update window cuts here.
+# Everything below this line is for the download page; install instructions start here.
 MARKER="<!-- tinycast:install -->"
 # Discord rejects a component over 4000 characters, and a wall of bullets reads worse than a taste.
 DISCORD_BUDGET=1200
@@ -40,7 +40,7 @@ GENERATED="$(gh api "repos/${REPO}/releases/generate-notes" "${NOTES_ARGS[@]}" -
 
 COMPARE_URL="$(printf '%s\n' "$GENERATED" | sed -n 's|^\*\*Full Changelog\*\*: \(.*\)$|\1|p' | tail -n1)"
 
-# A bare `#304` still autolinks on the web and fits the 460pt update window; the full URL does neither.
+# A bare `#304` still autolinks on the web and keeps release notes compact.
 CHANGELOG="$(printf '%s\n' "$GENERATED" | sed -E \
     -e '/^\*\*Full Changelog\*\*:/d' \
     -e "s|https://github\.com/${REPO}/pull/([0-9]+)|#\1|g")"

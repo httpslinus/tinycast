@@ -637,6 +637,16 @@ struct ExtensionTests {
             const React = require("react");
             const path = require("node:path");
             const crypto = require("node:crypto");
+            const { Buffer } = require("node:buffer");
+            const field = Buffer.from('A CSV field longer than twenty bytes: café');
+            const grown = Buffer.allocUnsafe(field.length * 2);
+            if (Buffer.compare(Buffer.from('"'), Buffer.from('"')) !== 0
+                || Buffer.compare(Buffer.from([255]), new Uint8Array([0])) !== 1
+                || Buffer.compare(Buffer.from([1]), Buffer.from([1, 0])) !== -1
+                || field.copy(grown) !== field.length
+                || Buffer.compare(field, grown.slice(0, field.length)) !== 0) {
+              throw new Error("Buffer comparison or CSV field growth failed");
+            }
             const h = React.createElement;
             module.exports.default = function Command() {
               const [count, setCount] = React.useState(0);

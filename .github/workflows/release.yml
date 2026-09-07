@@ -118,8 +118,7 @@ jobs:
             exit 1
           fi
 
-      # Two artifacts from one build: the DMG people download and the cask installs, and the zip
-      # the in-app updater installs — it expands with `ditto` instead of mounting a volume.
+      # Publish both disk images and archives for direct downloads.
       - name: Package DMG and ZIP
         env:
           DISPLAY_NAME: ${{ steps.meta.outputs.display_name }}
@@ -141,8 +140,7 @@ jobs:
           name: Tinycast-${{ steps.meta.outputs.full_version }}
           path: dist/
 
-      # The changelog GitHub derives from the merged PRs, with the install text below a marker the
-      # update window cuts at. Nothing is committed anywhere — see docs/release.md.
+      # Compose the changelog and install instructions without committing release notes.
       - name: Compose release notes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -194,6 +192,7 @@ jobs:
           fi
           sed -i '' -E "s|^  version \".*\"|  version \"${VERSION}\"|" "$CASK_FILE"
           sed -i '' -E "s|^  sha256 \".*\"|  sha256 \"${SHA}\"|" "$CASK_FILE"
+          sed -i '' -E '/^[[:space:]]*auto_updates[[:space:]]+true[[:space:]]*$/d' "$CASK_FILE"
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -282,8 +281,7 @@ jobs:
           echo "Using $XCODE_PATH"
           echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
 
-      # The SAME identity as the thin build, and a hard failure if it is missing: the in-app updater
-      # compares the staged bundle's leaf certificate against the running app's before installing.
+      # Keep the signing identity consistent across architectures.
       - name: Import signing certificate
         env:
           P12_BASE64: ${{ secrets.SIGNING_P12_BASE64 }}
@@ -358,8 +356,7 @@ jobs:
           name: Tinycast-Universal-${{ needs.build.outputs.full_version }}
           path: dist/
 
-      # Upload, never create: the build job owns the release. Uploading second also keeps the thin
-      # zip first in the asset list, so clients predating architecture-aware selection still take it.
+      # The build job owns the release.
       - name: Attach to the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -385,6 +382,7 @@ jobs:
           fi
           sed -i '' -E "s|^  version \".*\"|  version \"${VERSION}\"|" "$CASK_FILE"
           sed -i '' -E "s|^  sha256 \".*\"|  sha256 \"${SHA}\"|" "$CASK_FILE"
+          sed -i '' -E '/^[[:space:]]*auto_updates[[:space:]]+true[[:space:]]*$/d' "$CASK_FILE"
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

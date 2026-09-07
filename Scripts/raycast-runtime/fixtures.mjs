@@ -191,6 +191,53 @@ export default function Command() {
 }
 `;
 
+function bufferResults(Buffer) {
+  const outcome = (run) => {
+    try { return run(); } catch (error) { return error.name; }
+  };
+  const samples = [[], [0], [255], [1, 2], [1, 2, 0], [1, 3], [128, 0]];
+  const results = [];
+  for (const left of samples) {
+    for (const right of samples) {
+      results.push(Buffer.compare(Buffer.from(left), Buffer.from(right)));
+      results.push(Buffer.compare(new Uint8Array(left), Buffer.from(right)));
+    }
+  }
+  const view = new Uint8Array([99, 1, 2, 88]).subarray(1, 3);
+  results.push(Buffer.compare(view, Buffer.from([1, 2])));
+  for (const invalid of [null, undefined, "ab", [1, 2], new Uint16Array([1]), new ArrayBuffer(2)]) {
+    results.push(outcome(() => Buffer.compare(invalid, view)));
+    results.push(outcome(() => Buffer.compare(view, invalid)));
+  }
+  for (const offsets of [[], [1], [0, 1, 3], [0, 2, 1], [0, 0, 99], [99], [0, 4],
+    [-1], [0, -1], [0, 0, -1], [0, 99], [1.5], [NaN], [Infinity], ["1"], [null]]) {
+    results.push(outcome(() => {
+      const source = Buffer.from([0, 128, 255, 3]);
+      const target = new Uint8Array(3);
+      return [source.copy(target, ...offsets), Array.from(target), Array.from(source)];
+    }));
+  }
+  for (const offsets of [[1, 0, 3], [0, 1, 4]]) {
+    const bytes = Buffer.from([1, 2, 3, 4]);
+    results.push([bytes.copy(bytes, ...offsets), Array.from(bytes)]);
+  }
+  const shared = Buffer.from([1, 2, 3, 4, 5]);
+  results.push([shared.slice(0, 4).copy(shared.slice(1)), Array.from(shared)]);
+  results.push(outcome(() => Buffer.from([1]).copy([])));
+  const field = Buffer.from('A long CSV field with "quotes", commas and Unicode: café');
+  const grown = Buffer.allocUnsafe(field.length * 2);
+  results.push([field.copy(grown), grown.slice(0, field.length).toString()]);
+  return results;
+}
+
+const bufferSource = `
+import { Buffer } from "node:buffer";
+export default function Command() {
+  globalThis.__bufferResults = (${bufferResults.toString()})(Buffer);
+  globalThis.__sameBuffer = Buffer === globalThis.Buffer && Buffer === require("buffer").Buffer;
+}
+`;
+
 // Bundled HTTP clients (axios) construct and probe a Response at module scope, before any component
 // mounts — a host-shaped constructor took the whole command down with them.
 const responseSource = `
@@ -514,6 +561,13 @@ export async function runFixtures() {
       "héllo",
     ];
     expected.forEach((value, index) => check(`shim ${index}: ${value}`, markdown[index] === value, markdown[index]));
+  });
+
+  await run("Buffer comparison and copying match Node", bufferSource, "no-view", async (harness) => {
+    check("command completes", harness.state.finished, harness.state.failures.join("; "));
+    check("global and module exports agree", harness.call("globalThis.__sameBuffer") === true);
+    const actual = harness.call("JSON.stringify(globalThis.__bufferResults)");
+    check("byte ordering, offsets, overlap and invalid inputs", actual === JSON.stringify(bufferResults(Buffer)), actual);
   });
 
   await run("Response takes the Web spec's constructor", responseSource, "no-view", async (harness) => {

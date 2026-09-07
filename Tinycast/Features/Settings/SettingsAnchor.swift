@@ -66,6 +66,10 @@ extension SettingsAnchor {
     static let clipboardDisabledApplications = Self(
         tab: .clipboard, title: "Disabled Applications")
 
+    static let keepassGlobalShortcuts = Self(tab: .keepass, title: "Global Shortcuts")
+    static let keepassDatabase = Self(tab: .keepass, title: "Database")
+    static let keepassSecurity = Self(tab: .keepass, title: "Security")
+
     static let emojiGlobalShortcuts = Self(tab: .emoji, title: "Global Shortcuts")
     static let emojiAppearance = Self(tab: .emoji, title: "Appearance")
 

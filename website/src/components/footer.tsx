@@ -1,4 +1,3 @@
-import { Heart } from "lucide-react";
 import { site } from "../data/site";
 import { DiscordLogo, GitHubLogo, Logo } from "./ui/icon";
 import { Link } from "./ui/link";
@@ -50,15 +49,6 @@ export function Footer() {
           >
             <DiscordLogo size={16} />
             Join the Discord
-          </a>
-          <a
-            href={site.support}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-2 text-small text-fg-muted transition-colors hover:text-fg"
-          >
-            <Heart size={16} />
-            Support Tinycast
           </a>
         </div>
 

@@ -396,6 +396,10 @@ would launch Raycast itself.
 `string_decoder`, `timers`. Every other built-in resolves to a stub that throws only when used, so a
 bundle that merely references `dgram` or `http2` still loads.
 
+`Buffer.compare` orders bytes lexicographically and accepts buffers or `Uint8Array` views. `Buffer.copy`
+supports offsets, truncation and overlapping views. KeePassXC's bundled CSV parser uses comparison for
+quote detection and copying to grow its field buffer.
+
 **Streams** — the stream core is Node's real contract, not a stand-in: an extension that ships
 `stream-chain` and `stream-json` to walk a package index builds object-mode pipelines out of it, and
 `Homebrew` is the reference case. `fetch` responses expose `body` as a `ReadableStream`, so

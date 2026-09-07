@@ -41,13 +41,17 @@ Xcode, prefix with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (t
 project settings in `project.yml`, run `xcodegen generate` and commit the result. There is no
 `Package.swift`, and `Bundle.module` must never be used.
 
+The `icon` file type in `project.yml` keeps `tinycast.icon` as one Icon Composer package in the
+Resources phase. It must not be expanded into loose JSON/SVG files: Xcode compiles the package into
+the app icon and writes the icon keys into the built Info.plist.
+
 ### The dev channel
 
 Debug builds are a separate channel: **`Tinycast Dev.app`**, bundle id `com.tinycast.app.dev`. Every
 persisted thing is keyed by bundle id — `~/Library/Preferences/<id>.plist` (settings and hotkey
 bindings), `~/Library/Application Support/<id>/` (the onboarding marker, Notes, snippets, quicklinks,
 clipboard history, calculator history, launch ranking and frequent emoji),
-`~/Library/Caches/<id>/` (exchange rates, the update check, staged downloads), the `SMAppService`
+`~/Library/Caches/<id>/` (exchange rates), the `SMAppService`
 login item, and the Accessibility / Input Monitoring (TCC) grants — so a local build can neither read
 nor clobber an installed app's state, and both run side by side.
 

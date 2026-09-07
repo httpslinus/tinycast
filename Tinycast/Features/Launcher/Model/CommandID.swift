@@ -10,6 +10,7 @@ enum CommandID: String, CaseIterable, Sendable {
     case calculatorHistory = "command:calculator-history"
     case clipboardHistory = "command:clipboard-history"
     case searchEmoji = "command:search-emoji"
+    case searchKeePass = "command:search-keepass"
     case searchFiles = "command:search-files"
     case openInBrowser = "command:open-in-browser"
     case runShellCommand = "command:run-shell-command"
@@ -30,10 +31,8 @@ enum CommandID: String, CaseIterable, Sendable {
     case exportSettings = "command:export-settings"
     case importSettings = "command:import-settings"
     case importFromRaycast = "command:import-from-raycast"
-    case checkForUpdates = "command:check-for-updates"
     case settings = "command:settings"
     case about = "command:about"
-    case support = "command:support"
     case quit = "command:quit"
 
     var name: String {
@@ -46,6 +45,7 @@ enum CommandID: String, CaseIterable, Sendable {
         case .calculatorHistory: return "Calculator History"
         case .clipboardHistory: return "Clipboard History"
         case .searchEmoji: return "Search Emoji & Symbols"
+        case .searchKeePass: return "Search KeePass"
         case .searchFiles: return "Search Files"
         case .openInBrowser: return "Open in Browser"
         case .runShellCommand: return "Run Shell Command"
@@ -66,10 +66,8 @@ enum CommandID: String, CaseIterable, Sendable {
         case .exportSettings: return "Export Backup"
         case .importSettings: return "Import Backup"
         case .importFromRaycast: return "Import from Raycast"
-        case .checkForUpdates: return "Check for Updates"
         case .settings: return "Settings"
         case .about: return "About Tinycast"
-        case .support: return "Support Tinycast"
         case .quit: return "Quit Tinycast"
         }
     }
@@ -84,6 +82,7 @@ enum CommandID: String, CaseIterable, Sendable {
         case .calculatorHistory: return "plus.forwardslash.minus"
         case .clipboardHistory: return "doc.on.clipboard"
         case .searchEmoji: return "face.smiling"
+        case .searchKeePass: return "lock.shield"
         case .searchFiles: return "doc.text.magnifyingglass"
         case .openInBrowser: return "globe"
         case .runShellCommand: return "terminal"
@@ -104,10 +103,8 @@ enum CommandID: String, CaseIterable, Sendable {
         case .exportSettings: return "square.and.arrow.up"
         case .importSettings: return "square.and.arrow.down"
         case .importFromRaycast: return "arrow.down.doc"
-        case .checkForUpdates: return "arrow.down.circle"
         case .settings: return "gearshape"
         case .about: return "info.circle"
-        case .support: return "heart"
         case .quit: return "power"
         }
     }

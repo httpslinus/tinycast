@@ -528,7 +528,7 @@ system-drawn and a pane reads exactly as macOS System Settings does.
   edge effect are drawn by AppKit as a pane's `Form` scrolls under it. `.fullSizeContentView` and
   `titlebarSeparatorStyle = .none` stay — the content still runs under the bar, and a hairline would
   split the surface the band unifies. It also clears `isMovableByWindowBackground`: stock Settings
-  isn't dragged by its content. Onboarding, Updates, Support and Command Output keep the transparent
+  isn't dragged by its content. Onboarding and Command Output keep the transparent
   titlebar they were tuned for. Never hand-draw a header band; a main surface takes the system's
   material, not `glassEffect`.
 - `SettingsComponents.swift` holds only what more than one pane needs: **`SettingsRow`**,

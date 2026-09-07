@@ -7,6 +7,7 @@ enum PaletteMode: String, CaseIterable, Identifiable {
     case aiHistory
     case calculatorHistory
     case emoji
+    case keepass
     case fileSearch
     case schedule
     case uninstall
@@ -31,6 +32,7 @@ enum PaletteMode: String, CaseIterable, Identifiable {
         case .aiHistory: return "clock.arrow.circlepath"
         case .calculatorHistory: return "plus.forwardslash.minus"
         case .emoji: return "face.smiling"
+        case .keepass: return "lock.shield"
         case .fileSearch: return "doc.text.magnifyingglass"
         case .schedule: return "calendar"
         case .uninstall: return "trash"
@@ -48,6 +50,7 @@ enum PaletteMode: String, CaseIterable, Identifiable {
         case .aiHistory: return "Search chats…"
         case .calculatorHistory: return "Do math, convert units, or search your past calculations…"
         case .emoji: return "Search emoji and symbols…"
+        case .keepass: return "Search KeePass…"
         case .fileSearch: return "Search files and folders…"
         case .schedule: return "Search your schedule…"
         case .uninstall: return "Filter files and folders by name…"
