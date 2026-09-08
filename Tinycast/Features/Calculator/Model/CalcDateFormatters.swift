@@ -13,6 +13,13 @@ enum CalcDateFormatters {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cache: [Key: DateFormatter] = [:]
 
+    static func clockString(from date: Date, calendar: Calendar, zone: TimeZone) -> String {
+        let locale = calendar.locale ?? Locale(identifier: "en_US")
+        let pattern = DateFormatter.dateFormat(fromTemplate: "jmm", options: 0, locale: locale) ?? "h:mm a"
+        return string(from: date, calendar: calendar, zone: zone, pattern: pattern)
+            .replacingOccurrences(of: "\u{202F}", with: " ")
+    }
+
     static func string(from date: Date, calendar: Calendar, zone: TimeZone, pattern: String) -> String {
         let locale = calendar.locale ?? Locale(identifier: "en_US")
         let key = Key(

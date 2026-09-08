@@ -7,6 +7,8 @@ enum CalcMemo {
         let query: String
         let stamp: Date?
         let region: String?
+        let minute: Int
+        let calendar: Calendar
         let result: CalcResult?
     }
 
@@ -14,11 +16,16 @@ enum CalcMemo {
 
     static func evaluate(_ query: String, rates: CurrencyRates?) -> CalcResult? {
         let region = RegionCurrency.code
-        if let cache, cache.query == query, cache.stamp == rates?.fetchedAt, cache.region == region {
+        let now = Date()
+        let calendar = Calendar.current
+        let minute = Int(floor(now.timeIntervalSinceReferenceDate / 60))
+        if let cache, cache.query == query, cache.stamp == rates?.fetchedAt, cache.region == region,
+            cache.minute == minute, cache.calendar == calendar
+        {
             return cache.result
         }
-        let result = CalcEngine.evaluate(query, rates: rates, region: region)
-        cache = Cache(query: query, stamp: rates?.fetchedAt, region: region, result: result)
+        let result = CalcEngine.evaluate(query, now: now, calendar: calendar, rates: rates, region: region)
+        cache = Cache(query: query, stamp: rates?.fetchedAt, region: region, minute: minute, calendar: calendar, result: result)
         return result
     }
 }

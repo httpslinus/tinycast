@@ -106,6 +106,28 @@ arithmetic.
 
 Two-digit years: 00–68 are 2000s, 69–99 are 1900s.
 
+## Time zones
+
+| You type | It means |
+| --- | --- |
+| `6pm PT` | The next 6 PM Pacific in your local timezone |
+| `2pm california to berlin` | The next 2 PM in California, converted to Berlin |
+| `14:00 california to paris` | The same conversion using a 24-hour clock |
+| `tomorrow at 6pm PT` | Tomorrow's 6 PM Pacific, in your local timezone |
+| `6pm PT to UTC+5:30` | Convert into a fixed UTC offset |
+| `time in tokyo` | Tokyo's current time |
+
+Cities, common timezone abbreviations, airport codes and IANA identifiers work. `6 pm`, `noon`
+and `midnight` also work. Use `local` or `my time` as a destination to return to your Mac's timezone.
+
+Undated times choose their **next occurrence in the source timezone**. Named days keep the day you
+wrote. Regional zones follow daylight saving automatically; use a numeric UTC/GMT offset when you
+want a fixed offset.
+
+The result follows your local 12/24-hour format. When dates differ, the card includes the full date
+and year, and copying the answer keeps the date. Badges show the interpreted source time and the
+zone offsets for that instant.
+
 ## Other conversions
 
 Base conversion works both ways — `0xff` reads Hexadecimal → Decimal.

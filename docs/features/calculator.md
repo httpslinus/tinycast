@@ -9,7 +9,7 @@ in (see Currency below).
 ## Invariants
 
 - **`Model/` (including `CalcDateTime`) stays Foundation-only *and pure*** — no AppKit or SwiftUI, no
-  clock read, no network, **no `Locale`**. `calc-test` compiles the real engine sources. Every
+  clock read, no network, **no ambient locale read**. `calc-test` compiles the real engine sources. Every
   externally-sourced input is injected: the clock via `now`/`calendar`, the FX table via `rates`, and
   the Mac's own currency via `region`, which `RegionCurrency` reads and `CalcMemo` passes down.
 - **`CalcEngine.evaluate` never fetches** — it takes a finished `CurrencyRates?`, nil meaning no
@@ -21,7 +21,8 @@ in (see Currency below).
   IANA moves a zone. `TimeZone.abbreviationDictionary` stays deliberately unused — it holds 51
   entries and its `BDT` is the Bangladeshi taka. The home zone is read off the **injected calendar**,
   never `TimeZone.current`, which is what keeps the path pure and the harness deterministic.
-  `localizedName` needs a `Locale`, so a badge is the identifier's own city component instead.
+  The target badge uses the identifier's city component and its offset at the answer's instant;
+  `CalcDateFormatters` follows the injected calendar's locale for the target's 12/24-hour format.
 - **A workday is 8 hours, and nothing consults a calendar.** Weekends and public holidays would make
   the same query answer differently on two Macs, and the only supported source for them is EventKit,
   whose Full Calendar Access grant a calculator must never provoke mid-keystroke. `workdays` is
@@ -187,16 +188,35 @@ still earns a card where a lone `100000` deliberately doesn't. A literal that ov
 
 ## Time zones
 
-`CalcTimeZone` answers `time in Tokyo`, `what time is it in London`, `5pm ldn in sf` and
-`9:30am in nyc`. It runs **before the tokenizer** — a zone phrase is words, and `5pm ldn in sf`
-is not calculator input — but its grammar always needs an `in` / `to` / `at` connector, so an
-ordinary app search never reaches the zone table at all.
+`CalcTimeZone` answers `6pm PT`, `2pm california to berlin`, `14:00 california to paris`,
+`time in Tokyo`, `what time is it in London`, `5pm ldn in sf` and `9:30am in nyc`. It runs before
+numeric tokenizing. A clock with a named source zone needs no connector and answers in the Mac's
+own zone. With `in` / `to` / `at` / `->` / `→`, the right side names the destination; an omitted
+source uses the Mac's zone. `local`, `here`, `my time` and `local time` explicitly name that zone.
 
-The source is the Mac's own zone unless the query names one, which is what makes `5pm london in sf`
-work without either side being local. That zone comes from the **injected calendar**, so `Model/`
-performs no environment read and `calc-test` pins UTC exactly as it pins the clock. A result that
-lands on another date is suffixed `(tomorrow)` / `(yesterday)` rather than silently reading as the
-same day — the copyable text stays the bare time.
+An **undated clock always resolves to its next occurrence in the source zone**, strictly after
+`now`. A source day (`tomorrow at 6pm PT`, `6pm PT on friday`, `2026-12-31 at 6pm PT to berlin`)
+uses that day's clock, even when it has passed. Day parsing reuses `CalcDateTime.resolveDay`.
+`6 pm`, `6 p.m.`, `18:00`, `noon` and `midnight` all qualify; a bare number does not.
+
+Foundation resolves the actual occurrence before either offset is read. A skipped spring-forward
+clock is skipped to its next real occurrence; an explicitly dated nonexistent time stays silent.
+A repeated fall-back clock chooses the earliest remaining occurrence, including the second one
+when the first has passed. Abbreviations such as `PT`, `PST` and `PDT` follow their region's seasonal
+clock, matching Raycast; `UTC-8` is an explicit fixed offset. Numeric UTC/GMT offsets support
+minute components (`UTC+5:30`), and full IANA identifiers are accepted case-insensitively.
+
+The card uses the existing two-column calculator layout: original query, answer, and small badges
+showing the interpreted source clock/offset and destination/offset. An implicit target says
+**Your Time**. When the source and target have different civil dates, or either is on a different
+day from its own current date, the answer includes the full date and year and the source badge
+includes its date. Comparisons use era, year, month and day, including date-line and year boundaries.
+**The copyable answer retains that date**, as does Calculator History.
+
+Unknown source words, incomplete destinations and malformed clocks stay silent; an unrecognized
+source never silently falls back to the local zone. All clock, zone and locale inputs come from
+the injected `now` / `calendar`. `CalcMemo` includes the current minute and calendar in its key,
+so a later evaluation of the same query cannot reuse yesterday's answer or a previous home zone.
 
 A trailing `+ 2h` / `- 30 min` shifts the answer before it is converted, so `5pm ldn in sf + 2h`
 stays one query rather than needing two. Only sub-day units qualify, since a zone answer is a clock
@@ -213,12 +233,11 @@ city always outranks a duration. City names are matched **diacritic-folded**, be
 carry no accents while the cities do: `são paulo` and `zürich` resolve alongside their bare
 spellings, the same folding `CalcCurrency` already applies to its nouns.
 
-Two tables back it. `cities` is derived from `TimeZone.knownTimeZoneIdentifiers` on first use: 443
-identifiers keyed by their city component, ~0.8 ms to build and ~18 ns to query, so nothing is
-generated and no copy of tzdata is committed. `aliases` is the hand-written half, and the only place
+Two tables back it. `cities` is derived from `TimeZone.knownTimeZoneIdentifiers` on first use,
+keyed by city component and full identifier. Nothing is generated and no copy of tzdata is committed. `aliases` is the hand-written half, and the only place
 judgement lives — the abbreviations (`pst`, `cet`, `jst`), the nicknames a zone name doesn't carry
-(`sf`, `nyc`, `ldn`), and the renamed zones Foundation still resolves but no longer lists
-(`kolkata`, `saigon`). It is deliberately small and deliberately not slang, for the same reason
+(`sf`, `nyc`, `ldn`), regions (`california`, `pacific time`), and the renamed zones Foundation still
+resolves but no longer lists (`kolkata`, `saigon`). It is deliberately small and deliberately not slang, for the same reason
 `CalcCurrency` refuses `quid`.
 
 It also carries the **cities IANA never names**. The database ships one representative city per
@@ -243,9 +262,8 @@ currency and a zone abbreviation both outrank an airport, the same ordering the 
 follows. The compiler enforces the rest: a duplicate key in the literal is a warning, which is what
 caught `syd` and `hkg` already being nicknames.
 
-Order settles the collisions. Time zones run **last** among the named paths, after units and
-currency, so `10 cordoba to usd` stays money and `1 cup to ml` stays volume. `cordoba` is the one
-word the zone and currency tables both claim.
+Clock syntax settles collisions with units and currency: `10 cordoba to usd` stays money and
+`1 cup to ml` stays volume because neither begins with a written clock or a current-time phrase.
 
 ## Timespans
 

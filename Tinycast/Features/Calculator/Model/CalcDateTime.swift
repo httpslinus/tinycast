@@ -466,6 +466,11 @@ enum CalcDateTime {
         let hasTime: Bool
     }
 
+    static func resolveDay(_ phrase: String, now: Date, calendar: Calendar) -> Date? {
+        guard let moment = parseMoment(phrase, now: now, calendar: calendar), !moment.hasTime else { return nil }
+        return moment.date
+    }
+
     private static func parseMoment(
         _ phrase: String, now: Date, calendar: Calendar, bias: MomentBias = .future
     ) -> Moment? {

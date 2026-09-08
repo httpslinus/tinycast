@@ -720,21 +720,23 @@ struct CalcTests {
         expectBadges("145 mins to timespan", source: "Minutes", target: "Timespan")
         expectNil("10 km to timespan")
 
+        timeZoneConversions()
+
         // Time zones. The clock is UTC-pinned, so every one of these is exact.
         expectDisplayAt("time in tokyo", "9:18 AM")
-        expectDisplayAt("time in sf", "5:18 PM (yesterday)")
+        expectDisplayAt("time in sf", "23 July 2026 at 5:18 PM")
         expectDisplayAt("what time is it in london", "1:18 AM")
         expectDisplayAt("time in kolkata", "5:48 AM")
         expectDisplayAt("time in utc", "12:18 AM")
-        expectBadgesAt("time in tokyo", source: "UTC", target: "Tokyo")
-        expectBadgesAt("time in sf", source: "UTC", target: "Los Angeles")
+        expectBadgesAt("time in tokyo", source: "12:18 AM, GMT", target: "Tokyo, GMT+9")
+        expectBadgesAt("time in sf", source: "Fri, 24 Jul 2026, 12:18 AM, GMT", target: "Los Angeles, GMT-7")
         // A named source zone overrides the Mac's own, so neither side has to be local
-        expectDisplayAt("5pm london in sf", "9:00 AM")
-        expectDisplayAt("9:30am in nyc", "5:30 AM")
-        expectDisplayAt("5pm in tokyo", "2:00 AM (tomorrow)")
-        expectBadgesAt("5pm london in sf", source: "London", target: "Los Angeles")
+        expectDisplayAt("5pm london in sf", "24 July 2026 at 9:00 AM")
+        expectDisplayAt("9:30am in nyc", "24 July 2026 at 5:30 AM")
+        expectDisplayAt("5pm in tokyo", "25 July 2026 at 2:00 AM")
+        expectBadgesAt("5pm london in sf", source: "Fri, 24 Jul 2026, 5:00 PM, GMT+1", target: "Los Angeles, GMT-7")
         // Aliases cover what the identifiers don't spell, and DST is Foundation's own answer
-        expectDisplayAt("time in nyc", "8:18 PM (yesterday)")
+        expectDisplayAt("time in nyc", "23 July 2026 at 8:18 PM")
         expectDisplayAt("time in cet", "2:18 AM")
         // A zone name never outranks a unit or a currency, and a non-zone stays a search
         expectDisplay("1 cup to ml", "236.5882365 mL")
@@ -746,19 +748,19 @@ struct CalcTests {
         expectDisplayAt("time in vie", "2:18 AM")
         expectDisplayAt("time in lhr", "1:18 AM")
         expectDisplayAt("time in nrt", "9:18 AM")
-        expectDisplayAt("time in sfo", "5:18 PM (yesterday)")
-        expectBadgesAt("time in vie", source: "UTC", target: "Vienna")
-        expectDisplayAt("5pm vie in nrt", "12:00 AM (tomorrow)")
+        expectDisplayAt("time in sfo", "23 July 2026 at 5:18 PM")
+        expectBadgesAt("time in vie", source: "12:18 AM, GMT", target: "Vienna, GMT+2")
+        expectDisplayAt("5pm vie in nrt", "25 July 2026 at 12:00 AM")
         // `mad` stays the Moroccan dirham, and `ist` stays India Standard Time
         expectError("10 mad to usd", "No exchange rate for MAD.")
-        expectBadgesAt("time in ist", source: "UTC", target: "Kolkata")
+        expectBadgesAt("time in ist", source: "12:18 AM, GMT", target: "Kolkata, GMT+5:30")
 
         // A trailing offset shifts a zone answer, so the whole thing stays one query
-        expectDisplayAt("5pm london in sf", "9:00 AM")
-        expectDisplayAt("5pm london in sf + 2h", "11:00 AM")
-        expectDisplayAt("5pm london in sf - 1 hour", "8:00 AM")
-        expectDisplayAt("5pm london in sf + 30 min", "9:30 AM")
-        expectBadgesAt("5pm london in sf + 2h", source: "London", target: "Los Angeles")
+        expectDisplayAt("5pm london in sf", "24 July 2026 at 9:00 AM")
+        expectDisplayAt("5pm london in sf + 2h", "24 July 2026 at 11:00 AM")
+        expectDisplayAt("5pm london in sf - 1 hour", "24 July 2026 at 8:00 AM")
+        expectDisplayAt("5pm london in sf + 30 min", "24 July 2026 at 9:30 AM")
+        expectBadgesAt("5pm london in sf + 2h", source: "Fri, 24 Jul 2026, 7:00 PM, GMT+1", target: "Los Angeles, GMT-7")
         // A unit conversion is not a zone offset, and neither is a bare sum
         expectDisplay("1 cup to ml", "236.5882365 mL")
         expectNil("5pm london in sf + 2 kg")
@@ -783,12 +785,12 @@ struct CalcTests {
         // A duration where a zone would go, and both at once
         expectDisplayAt("time in 4 hours", "4:18 AM")
         expectDisplayAt("time in 90 min", "1:48 AM")
-        expectDisplayAt("time in 4 hours in san francisco", "9:18 PM (yesterday)")
+        expectDisplayAt("time in 4 hours in san francisco", "23 July 2026 at 9:18 PM")
 
         // A bare offset on a clock answer is hours, the unit the answer already implies
         expectDisplayAt("time in tokyo + 2", "11:18 AM")
-        expectDisplayAt("time in tokyo - 2", "7:18 AM (tomorrow)")
-        expectDisplayAt("5pm london in sf + 3", "12:00 PM")
+        expectDisplayAt("time in tokyo - 2", "24 July 2026 at 7:18 AM")
+        expectDisplayAt("5pm london in sf + 3", "24 July 2026 at 12:00 PM")
         // Only the offset implies it: a bare number is still no zone, and plain math is untouched
         expectNilAt("time in 4")
         expectDisplay("5 + 3", "8")
@@ -867,26 +869,26 @@ struct CalcTests {
         expectDisplay("5/2 - 1/2", "2")
 
         // Accented spellings resolve, since the identifiers carry none
-        expectDisplayAt("time in são paulo", "9:18 PM (yesterday)")
-        expectDisplayAt("time in sao paulo", "9:18 PM (yesterday)")
+        expectDisplayAt("time in são paulo", "23 July 2026 at 9:18 PM")
+        expectDisplayAt("time in sao paulo", "23 July 2026 at 9:18 PM")
         expectDisplayAt("time in zürich", "2:18 AM")
 
         // Cities IANA never names, because their clocks never differed from the zone's own
-        expectBadgesAt("time in graz", source: "UTC", target: "Vienna")
-        expectBadgesAt("time in salzburg", source: "UTC", target: "Vienna")
-        expectBadgesAt("time in klagenfurt", source: "UTC", target: "Vienna")
-        expectBadgesAt("time in hannover", source: "UTC", target: "Berlin")
-        expectBadgesAt("time in stuttgart", source: "UTC", target: "Berlin")
-        expectBadgesAt("time in basel", source: "UTC", target: "Zurich")
-        expectBadgesAt("time in manchester", source: "UTC", target: "London")
-        expectBadgesAt("time in florence", source: "UTC", target: "Rome")
-        expectBadgesAt("time in lyon", source: "UTC", target: "Paris")
-        expectBadgesAt("time in krakow", source: "UTC", target: "Warsaw")
+        expectBadgesAt("time in graz", source: "12:18 AM, GMT", target: "Vienna, GMT+2")
+        expectBadgesAt("time in salzburg", source: "12:18 AM, GMT", target: "Vienna, GMT+2")
+        expectBadgesAt("time in klagenfurt", source: "12:18 AM, GMT", target: "Vienna, GMT+2")
+        expectBadgesAt("time in hannover", source: "12:18 AM, GMT", target: "Berlin, GMT+2")
+        expectBadgesAt("time in stuttgart", source: "12:18 AM, GMT", target: "Berlin, GMT+2")
+        expectBadgesAt("time in basel", source: "12:18 AM, GMT", target: "Zurich, GMT+2")
+        expectBadgesAt("time in manchester", source: "12:18 AM, GMT", target: "London, GMT+1")
+        expectBadgesAt("time in florence", source: "12:18 AM, GMT", target: "Rome, GMT+2")
+        expectBadgesAt("time in lyon", source: "12:18 AM, GMT", target: "Paris, GMT+2")
+        expectBadgesAt("time in krakow", source: "12:18 AM, GMT", target: "Warsaw, GMT+2")
         // Their accented spellings fold onto the same entry
-        expectBadgesAt("time in düsseldorf", source: "UTC", target: "Berlin")
-        expectBadgesAt("time in kraków", source: "UTC", target: "Warsaw")
-        expectBadgesAt("time in malmö", source: "UTC", target: "Stockholm")
-        expectBadgesAt("5pm graz in basel", source: "Vienna", target: "Zurich")
+        expectBadgesAt("time in düsseldorf", source: "12:18 AM, GMT", target: "Berlin, GMT+2")
+        expectBadgesAt("time in kraków", source: "12:18 AM, GMT", target: "Warsaw, GMT+2")
+        expectBadgesAt("time in malmö", source: "12:18 AM, GMT", target: "Stockholm, GMT+2")
+        expectBadgesAt("5pm graz in basel", source: "5:00 PM, GMT+2", target: "Zurich, GMT+2")
 
         // A bare number takes the unit its moment implies
         expectDisplayAt("3:45pm + 5", "24 July at 8:45 PM")
@@ -954,6 +956,99 @@ struct CalcTests {
 
         print("\n\(passes) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
+    }
+
+    static func timeZoneConversions() {
+        expectZone("6pm PT", "8 September 2026 at 3:00 AM", source: "Mon, 7 Sep 2026, 6:00 PM, GMT-7", target: "Your Time, GMT+2")
+        expectZone("2pm california to berlin", "11:00 PM", source: "2:00 PM, GMT-7", target: "Berlin, GMT+2")
+        expectZone("14:00 california to paris", "11:00 PM", target: "Paris, GMT+2")
+        expectZone("14:00 california to paris time", "11:00 PM")
+        expectZone("2pm in california to berlin", "11:00 PM")
+        expectZone("tomorrow at 6pm in PT to berlin", "9 September 2026 at 3:00 AM")
+        expectZone("6pm tomorrow in PT to berlin", "9 September 2026 at 3:00 AM")
+        expectZone("14:00 california to paris", "23:00", locale: "en_GB")
+        expectZone("6pm PT", "8 September 2026 at 03:00", locale: "en_GB")
+        expectZone("6 pm PT", "8 September 2026 at 3:00 AM")
+        expectZone("6 p.m. PT", "8 September 2026 at 3:00 AM")
+        expectZone("6:45 PM Pacific Time to New York", "9:45 PM", target: "New York, GMT-4")
+        expectZone("6pm PT to local", "8 September 2026 at 3:00 AM")
+        expectZone("6pm PT to my time", "8 September 2026 at 3:00 AM")
+        expectZone("6pm PT -> berlin", "8 September 2026 at 3:00 AM")
+        expectZone("6pm PT → paris", "8 September 2026 at 3:00 AM")
+        expectZone("noon california to berlin", "9:00 PM")
+        expectZone("midnight PT", "8 September 2026 at 9:00 AM")
+        expectZone("00:00 PT", "8 September 2026 at 9:00 AM")
+        expectZone("12am PT", "8 September 2026 at 9:00 AM")
+        expectZone("12pm PT", "9:00 PM")
+        expectZone("6pm America/Los_Angeles to Europe/Berlin", "8 September 2026 at 3:00 AM")
+        expectZone("6pm UTC+5:30 to UTC", "12:30 PM", source: "6:00 PM, GMT+5:30", target: "UTC, GMT")
+        expectZone("6pm PST to UTC", "8 September 2026 at 1:00 AM")
+        expectZone("6pm PT", "8 September 2026 at 1:00 AM", local: "UTC")
+        expectZone("6pm PT", "9 September 2026 at 3:00 AM", now: "2026-09-08T01:01:00Z")
+        expectZone("6pm PT", "9 September 2026 at 3:00 AM", now: "2026-09-08T01:00:00Z")
+        expectZone("2pm california to berlin", "8 September 2026 at 11:00 PM", now: "2026-09-07T22:00:00Z")
+        expectZone("tomorrow at 6pm PT", "9 September 2026 at 3:00 AM")
+        expectZone("tomorrow at 6 pm PT", "9 September 2026 at 3:00 AM")
+        expectZone("6pm PT tomorrow", "9 September 2026 at 3:00 AM")
+        expectZone("6pm tomorrow PT to berlin", "9 September 2026 at 3:00 AM")
+        expectZone("6pm PT on friday to berlin", "12 September 2026 at 3:00 AM")
+        expectZone("next monday at 6pm california to paris", "15 September 2026 at 3:00 AM")
+        expectZone("2026-12-31 at 6pm PT to berlin", "1 January 2027 at 3:00 AM")
+        expectZone("31.12.26 at 6pm PT to berlin", "1 January 2027 at 3:00 AM")
+        expectZone("6pm PT on 31 december 2026 to berlin", "1 January 2027 at 3:00 AM")
+        expectZone("today at 2pm PT to berlin", "7 September 2026 at 11:00 PM", now: "2026-09-07T22:00:00Z")
+        expectZone("6pm PT + 2h", "8 September 2026 at 5:00 AM")
+        expectZone("6pm PT in 2 hours in berlin", "8 September 2026 at 5:00 AM")
+        expectZone("time at 4 hours in berlin", "4:00 PM")
+        expectZone("what's the time in berlin", "12:00 PM")
+        expectZone("what time in berlin", "12:00 PM")
+        expectZone("6pm PT to UTC+5:30", "8 September 2026 at 6:30 AM", target: "GMT+5:30")
+        expectZone("6pm central time to berlin", "8 September 2026 at 1:00 AM")
+        expectZone("6pm PT to berlin - 30 min", "8 September 2026 at 2:30 AM")
+        expectZone("00:30 tokyo to sf", "23 July 2026 at 8:30 AM", now: "2026-07-23T14:00:00Z")
+        expectZone("00:30 Kiritimati to UTC-12", "1 January 2026 at 10:30 PM", now: "2026-01-02T09:00:00Z")
+        expectZone("11pm UTC to berlin", "1 March 2026 at 12:00 AM", now: "2026-02-28T12:00:00Z")
+        expectZone("11pm UTC to berlin", "29 February 2028 at 12:00 AM", now: "2028-02-28T12:00:00Z")
+
+        // The next real clock occurrence can skip a missing hour or use the second repeated hour.
+        expectZone("2:30am PT to UTC", "9 March 2026 at 9:30 AM", now: "2026-03-08T09:00:00Z", local: "UTC")
+        expectZone("1:30am PT to UTC", "8:30 AM", now: "2026-11-01T08:15:00Z", local: "UTC")
+        expectZone("1:30am PT to UTC", "9:30 AM", now: "2026-11-01T08:45:00Z", local: "UTC")
+        expectZone("1:30am PT to UTC", "9:30 AM", now: "2026-11-01T09:15:00Z", local: "UTC")
+        expectZone("6pm california to berlin", "9 March 2026 at 2:00 AM", now: "2026-03-08T12:00:00Z")
+        expectZone("6pm california to berlin", "30 March 2026 at 3:00 AM", now: "2026-03-29T12:00:00Z")
+        expectZone("2026-03-08 at 2:30am PT to UTC", nil)
+        expectZone("2026-02-30 at 6pm PT to UTC", nil)
+        for query in ["6pm", "PT", "california", "6 california", "6pm unknown to berlin", "6pm xyzzy PT", "6pm PT to",
+                      "6pm PT to unknown", "6pm PT ->", "6pm PT + 2 kg", "6pm PT tomorrow garbage", "6pm PT to UTC+14:01",
+                      "6pm PT to UTC+99", "25:00 PT", "13pm PT", "0pm PT", "6:60pm PT", "6:0pm PT", "6: PT", ":30 PT",
+                      "6::30 PT", "6:30: PT", "6:30:00 PT", "6pm PST notes", "open calendar in berlin"] {
+            expectZone(query, nil)
+        }
+    }
+
+    static func expectZone(
+        _ query: String, _ expected: String?, now: String = "2026-09-07T10:00:00Z", local: String = "Europe/Berlin",
+        source: String? = nil, target: String? = nil, locale: String = "en_US"
+    ) {
+        var calendar = clock.calendar
+        calendar.locale = Locale(identifier: locale)
+        calendar.timeZone = TimeZone(identifier: local)!
+        let instant = ISO8601DateFormatter().date(from: now)!
+        let result = CalcEngine.evaluate(query, now: instant, calendar: calendar)
+        guard let expected else {
+            check(query, expected: "nil", got: result == nil ? "nil" : "\(result!)")
+            return
+        }
+        guard let result, case .value(let display, let copyText) = result.payload else {
+            fail(query, expected: expected, got: "nil / error")
+            return
+        }
+        check(query + " [display]", expected: expected, got: display)
+        check(query + " [copy]", expected: expected, got: copyText)
+        check(query + " [expression]", expected: query, got: result.expression)
+        if let source { check(query + " [source]", expected: source, got: result.sourceBadge ?? "nil") }
+        if let target { check(query + " [target]", expected: target, got: result.targetBadge ?? "nil") }
     }
 
     // MARK: - Fixed clock for deterministic date/time tests (Fri 2026-07-24 00:18:00 UTC)
