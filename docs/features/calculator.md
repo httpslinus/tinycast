@@ -189,10 +189,17 @@ still earns a card where a lone `100000` deliberately doesn't. A literal that ov
 ## Time zones
 
 `CalcTimeZone` answers `6pm PT`, `2pm california to berlin`, `14:00 california to paris`,
-`time in Tokyo`, `what time is it in London`, `5pm ldn in sf` and `9:30am in nyc`. It runs before
-numeric tokenizing. A clock with a named source zone needs no connector and answers in the Mac's
-own zone. With `in` / `to` / `at` / `->` / `→`, the right side names the destination; an omitted
-source uses the Mac's zone. `local`, `here`, `my time` and `local time` explicitly name that zone.
+`time in Tokyo`, `dubai time`, `time dubai`, `what time is it in London`, `5pm ldn in sf` and
+`9:30am in nyc`. It runs before numeric tokenizing. A clock with a named source zone needs no
+connector and answers in the Mac's own zone. With `in` / `to` / `at` / `->` / `→`, the right side
+names the destination; an omitted source uses the Mac's zone. `local`, `here`, `my time` and
+`local time` explicitly name that zone.
+
+`<place> time` and `time <place>` show the current time at the named destination, just like
+`time in <place>`, including the same offsets, date rollover, copy text and locale formatting.
+Country aliases include `uae` / `united arab emirates`, `germany`, `india`, `japan` and `albania`.
+The curated aliases cover countries with one current civil time; countries spanning multiple time
+zones, such as the United States, Canada, Australia and Russia, need a city or region instead.
 
 An **undated clock always resolves to its next occurrence in the source zone**, strictly after
 `now`. A source day (`tomorrow at 6pm PT`, `6pm PT on friday`, `2026-12-31 at 6pm PT to berlin`)

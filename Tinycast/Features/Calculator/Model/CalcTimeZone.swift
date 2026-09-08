@@ -8,16 +8,21 @@ enum CalcTimeZone {
         }
         let echo = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         let query = echo.lowercased()
+        let (zoneQuery, offset) = splitOffset(query)
         guard hasConnector(query) || query.first?.isNumber == true
             || ["noon ", "midnight ", "tomorrow ", "today ", "next "].contains(where: query.hasPrefix)
+            || zoneQuery.hasSuffix(" time") || zoneQuery.hasPrefix("time ")
         else { return nil }
 
         if let difference = offsetBetween(query, now: now, calendar: calendar) { return difference }
 
-        // A trailing `± <n> <unit>` shifts the answer, so `5pm ldn in sf + 2h` is still one query.
-        let (zoneQuery, offset) = splitOffset(query)
-        let words = zoneQuery.split(whereSeparator: \.isWhitespace).map(String.init)
+        var words = zoneQuery.split(whereSeparator: \.isWhitespace).map(String.init)
         guard words.count >= 2 else { return nil }
+        if words.last == "time", zone(named: Array(words.dropLast()), home: calendar.timeZone) != nil {
+            words = ["time", "in"] + words.dropLast()
+        } else if words.first == "time", zone(named: Array(words.dropFirst()), home: calendar.timeZone) != nil {
+            words.insert("in", at: 1)
+        }
 
         let connector = words.lastIndex(where: { ["in", "to", "at", "->", "→"].contains($0) })
         var target = calendar.timeZone
@@ -309,7 +314,7 @@ enum CalcTimeZone {
             "edinburgh", "bristol", "cardiff", "cambridge", "oxford", "belfast"
         ],
         "Asia/Kolkata": [
-            "ist", "kolkata", "bengaluru", "bangalore", "mumbai", "delhi", "new delhi", "chennai",
+            "india", "ist", "kolkata", "bengaluru", "bangalore", "mumbai", "delhi", "new delhi", "chennai",
             "hyderabad", "bom", "del", "blr", "pune", "ahmedabad", "jaipur", "surat", "lucknow", "kanpur",
             "nagpur", "goa", "kochi", "indore", "thane", "bhopal", "visakhapatnam", "vizag", "patna",
             "vadodara", "ghaziabad", "ludhiana", "agra", "nashik", "faridabad", "meerut", "rajkot",
@@ -320,26 +325,26 @@ enum CalcTimeZone {
             "jamshedpur", "bhubaneswar", "cuttack", "siliguri", "dhanbad", "kota", "shimla", "tirupati"
         ],
         "Asia/Tokyo": [
-            "jst", "osaka", "kyoto", "nrt", "hnd", "kix", "yokohama", "nagoya", "sapporo", "fukuoka", "kobe",
+            "japan", "jst", "osaka", "kyoto", "nrt", "hnd", "kix", "yokohama", "nagoya", "sapporo", "fukuoka", "kobe",
             "hiroshima", "sendai", "okinawa", "nara"
         ],
-        "Asia/Seoul": ["kst", "icn", "busan", "incheon", "daegu"],
+        "Asia/Seoul": ["south korea", "kst", "icn", "busan", "incheon", "daegu"],
         "Australia/Sydney": ["aest", "aedt", "syd", "canberra", "newcastle"],
         "Asia/Singapore": ["sgp", "sin"],
-        "Asia/Ho_Chi_Minh": ["saigon", "hcmc", "hanoi", "haiphong", "hue", "da nang"],
+        "Asia/Ho_Chi_Minh": ["vietnam", "saigon", "hcmc", "hanoi", "haiphong", "hue", "da nang"],
         "Europe/Berlin": [
-            "munich", "frankfurt", "hamburg", "cologne", "fra", "muc", "txl", "ber", "hannover", "hanover",
+            "germany", "munich", "frankfurt", "hamburg", "cologne", "fra", "muc", "txl", "ber", "hannover", "hanover",
             "stuttgart", "dusseldorf", "dortmund", "essen", "leipzig", "dresden", "bremen", "nuremberg",
             "nurnberg", "bonn", "mannheim", "karlsruhe", "freiburg", "munster", "augsburg", "kiel", "koln",
             "munchen"
         ],
         "Europe/Rome": [
-            "milan", "fco", "mxp", "naples", "turin", "florence", "venice", "bologna", "genoa", "palermo",
+            "italy", "milan", "fco", "mxp", "naples", "turin", "florence", "venice", "bologna", "genoa", "palermo",
             "verona"
         ],
         "Europe/Madrid": ["barcelona", "bcn", "valencia", "seville", "malaga", "bilbao", "zaragoza"],
         "Europe/Zurich": [
-            "geneva", "zrh", "gva", "basel", "bern", "lausanne", "lucerne", "luzern", "winterthur",
+            "switzerland", "geneva", "zrh", "gva", "basel", "bern", "lausanne", "lucerne", "luzern", "winterthur",
             "st gallen", "lugano"
         ],
         "Europe/Moscow": ["st petersburg", "svo", "led"],
@@ -358,28 +363,29 @@ enum CalcTimeZone {
         ],
         "America/Mexico_City": ["cdmx", "mexico city", "mex", "guadalajara", "puebla"],
         "Europe/Vienna": [
-            "vie", "graz", "salzburg", "linz", "innsbruck", "klagenfurt", "villach", "wels", "st polten",
+            "austria", "vie", "graz", "salzburg", "linz", "innsbruck", "klagenfurt", "villach", "wels", "st polten",
             "dornbirn", "bregenz", "wien"
         ],
         "Europe/Amsterdam": ["ams", "rotterdam", "the hague", "den haag", "eindhoven", "utrecht"],
         "Europe/Copenhagen": ["cph", "aarhus", "odense"],
         "Europe/Oslo": ["osl", "bergen", "trondheim"],
-        "Europe/Stockholm": ["arn", "gothenburg", "malmo"],
-        "Europe/Helsinki": ["hel", "tampere", "turku"],
-        "Europe/Dublin": ["dub", "cork", "galway"],
+        "Europe/Stockholm": ["sweden", "arn", "gothenburg", "malmo"],
+        "Europe/Helsinki": ["finland", "hel", "tampere", "turku"],
+        "Europe/Dublin": ["ireland", "dub", "cork", "galway"],
         "Europe/Lisbon": ["lis", "porto"],
-        "Europe/Athens": ["ath", "thessaloniki"],
-        "Europe/Prague": ["prg", "brno", "ostrava"],
-        "Europe/Warsaw": ["waw", "krakow", "gdansk", "wroclaw", "poznan", "lodz"],
-        "Europe/Budapest": ["bud"],
-        "Europe/Brussels": ["bru", "antwerp", "ghent", "bruges"],
-        "Asia/Dubai": ["dxb", "auh", "sharjah"],
+        "Europe/Athens": ["greece", "ath", "thessaloniki"],
+        "Europe/Prague": ["czechia", "czech republic", "prg", "brno", "ostrava"],
+        "Europe/Warsaw": ["poland", "waw", "krakow", "gdansk", "wroclaw", "poznan", "lodz"],
+        "Europe/Budapest": ["hungary", "bud"],
+        "Europe/Brussels": ["belgium", "bru", "antwerp", "ghent", "bruges"],
+        "Europe/Tirane": ["albania", "tirana"],
+        "Asia/Dubai": ["uae", "united arab emirates", "abu dhabi", "dxb", "auh", "sharjah"],
         "Asia/Qatar": ["doh", "doha"],
         "Asia/Hong_Kong": ["hkg"],
-        "Asia/Bangkok": ["bkk", "phuket", "chiang mai"],
-        "Asia/Kuala_Lumpur": ["kul", "penang", "johor bahru"],
+        "Asia/Bangkok": ["thailand", "bkk", "phuket", "chiang mai"],
+        "Asia/Kuala_Lumpur": ["malaysia", "kul", "penang", "johor bahru"],
         "Asia/Jakarta": ["cgk", "surabaya", "medan", "bandung", "denpasar", "bali"],
-        "Asia/Manila": ["mnl", "cebu", "davao"],
+        "Asia/Manila": ["philippines", "mnl", "cebu", "davao"],
         "Pacific/Auckland": ["akl", "wellington", "christchurch"],
         "America/Toronto": ["yyz", "yul", "ottawa", "quebec", "montreal"],
         "America/Vancouver": ["yvr", "victoria"],
@@ -394,11 +400,11 @@ enum CalcTimeZone {
         "Africa/Lagos": ["los", "abuja", "kano", "ibadan"],
         "Africa/Casablanca": ["cmn", "marrakech", "rabat", "fes", "tangier"],
         "Europe/Istanbul": ["ankara", "izmir"],
-        "Asia/Karachi": ["lahore", "islamabad", "faisalabad", "rawalpindi", "multan", "peshawar"],
+        "Asia/Karachi": ["pakistan", "lahore", "islamabad", "faisalabad", "rawalpindi", "multan", "peshawar"],
         "America/Guayaquil": ["quito"],
         "Europe/Malta": ["valletta"],
-        "Asia/Dhaka": ["chittagong", "chattogram"],
-        "Asia/Riyadh": ["jeddah", "mecca", "medina", "dammam"],
+        "Asia/Dhaka": ["bangladesh", "chittagong", "chattogram"],
+        "Asia/Riyadh": ["saudi arabia", "jeddah", "mecca", "medina", "dammam"],
         "Asia/Taipei": ["kaohsiung", "taichung"],
         "Asia/Kuwait": ["kuwait city"],
         "Asia/Bahrain": ["manama"],

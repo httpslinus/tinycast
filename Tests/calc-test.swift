@@ -959,6 +959,32 @@ struct CalcTests {
     }
 
     static func timeZoneConversions() {
+        expectZone("dubai time", "2:00 PM", source: "12:00 PM, GMT+2", target: "Dubai, GMT+4")
+        expectZone("Dubai Time", "2:00 PM")
+        expectZone("dubai time", "14:00", locale: "en_GB")
+        expectZone("dubai time", "4:00 PM", now: "2026-01-07T12:00:00Z")
+        expectZone("time dubai", "2:00 PM", target: "Dubai, GMT+4")
+        expectZone("time in dubai", "2:00 PM", target: "Dubai, GMT+4")
+        expectZone("san francisco time", "3:00 AM", target: "Los Angeles, GMT-7")
+        expectZone("zürich time", "12:00 PM", target: "Zurich, GMT+2")
+        expectZone("Asia/Dubai time", "2:00 PM")
+        expectZone("UTC+5:30 time", "3:30 PM", target: "GMT+5:30")
+        expectZone("dubai time + 2h", "4:00 PM")
+        expectZone("dubai time - 30 min", "1:30 PM")
+        expectZone("tokyo time", "8 September 2026 at 1:00 AM", now: "2026-09-07T16:00:00Z")
+        expectZone("germany time", "12:00 PM", target: "Berlin, GMT+2")
+        expectZone("germany time", "1:00 PM", now: "2026-01-07T12:00:00Z", target: "Berlin, GMT+1")
+        expectZone("india time", "3:30 PM", target: "Kolkata, GMT+5:30")
+        expectZone("uae time", "2:00 PM", target: "Dubai, GMT+4")
+        expectZone("united arab emirates time", "2:00 PM")
+        expectZone("time in united arab emirates", "2:00 PM")
+        expectZone("japan time", "7:00 PM", target: "Tokyo, GMT+9")
+        expectZone("albania time", "12:00 PM", target: "Tirane, GMT+2")
+        expectZone("6pm india to dubai", "4:30 PM")
+        for query in ["xyzzy time", "dubai time notes", "dubai", "time dubai notes", "dubai time + 2 kg",
+                      "united states time", "canada time", "australia time", "russia time", "5 time"] {
+            expectZone(query, nil)
+        }
         expectZone("6pm PT", "8 September 2026 at 3:00 AM", source: "Mon, 7 Sep 2026, 6:00 PM, GMT-7", target: "Your Time, GMT+2")
         expectZone("2pm california to berlin", "11:00 PM", source: "2:00 PM, GMT-7", target: "Berlin, GMT+2")
         expectZone("14:00 california to paris", "11:00 PM", target: "Paris, GMT+2")
