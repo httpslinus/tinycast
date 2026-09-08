@@ -58,16 +58,10 @@ Shiki highlighting is limited to `bash`, `json` and `markdown` in `source.config
 way — highlighting a keyboard shortcut or a placeholder buys nothing and costs bytes. Keyboard keys
 use `<kbd>`, which renders through the same keycap component as the marketing page.
 
-## Deploy
+## Static build
 
-Pushes to `main` touching `website/**` are built and published to GitHub Pages by
-`.github/workflows/website.yml`.
-
-Two things are load-bearing and easy to break:
-
-- **`public/.nojekyll` must exist.** GitHub Pages runs Jekyll, which ignores directories starting
-  with `_`. Without it, everything under `_next/` 404s and the site renders unstyled.
-- **The workflow uploads `website/out`**, which is where a Next.js export lands.
+This fork does not build or deploy the website through GitHub Actions. Run `npm run build`
+locally to generate the static export in `out/`.
 
 The site is served from the `/tinycast/` subpath, set as `basePath` in `next.config.mjs`. `next/link`
 and `next/image` prefix it automatically; a raw URL string does not, which is what `src/lib/asset.ts`
