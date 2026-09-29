@@ -33,9 +33,13 @@ struct KeePassSettingsView: View {
                 } label: {
                     SettingsRowTitle(.keepassSecurity, "Auto-lock")
                 }
-                LabeledContent("Status", value: coordinator.isUnlocked ? "Unlocked" : "Locked")
-                if coordinator.isUnlocked {
-                    Button("Lock Database", action: coordinator.lock)
+                SettingsRow(title: "Status") {
+                    HStack(spacing: Theme.Spacing.md) {
+                        Text(coordinator.isUnlocked ? "Unlocked" : "Locked")
+                        if coordinator.isUnlocked {
+                            Button("Lock", action: coordinator.lock)
+                        }
+                    }
                 }
             } header: {
                 SettingsSectionHeader(.keepassSecurity)

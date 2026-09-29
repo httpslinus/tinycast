@@ -40,6 +40,12 @@ struct KeePassScreen: PaletteScreen {
         return true
     }
 
+    func pasteUsername(at selection: Int) -> Bool {
+        guard let entry = entry(at: selection) else { return false }
+        coordinator.use(entry, field: .username, paste: true)
+        return true
+    }
+
     func pasteKeepingWindowOpen(at selection: Int) -> Bool {
         guard let entry = entry(at: selection) else { return false }
         coordinator.use(entry, field: .totp, paste: true)
@@ -99,7 +105,7 @@ struct KeePassScreen: PaletteScreen {
     private func pasteShortcut(for field: KeePassEntry.Field) -> String {
         switch field {
         case .password: "↵"
-        case .username: "⇧⌘U"
+        case .username: "⇧↵"
         case .totp: "⌥↵"
         case .url: "⇧⌘Y"
         }
@@ -119,6 +125,7 @@ struct KeePassScreen: PaletteScreen {
         let flags = modifiers.intersection([.control, .option, .shift, .command])
         let chord = (flags.contains(.control) ? "⌃" : "") + (flags.contains(.option) ? "⌥" : "")
             + (flags.contains(.shift) ? "⇧" : "") + "⌘" + String(key.character).uppercased()
+        if chord == "⇧⌘U" { return pasteUsername(at: selection) }
         guard let action = actions(at: selection)?.items.first(where: { $0.shortcut == chord }) else { return false }
         action.action()
         return true

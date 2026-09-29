@@ -345,6 +345,11 @@ struct RootPaletteView: View {
         .onKeyPress(keys: [.return], phases: .down) { press in
             let command = press.modifiers.contains(.command)
             let option = press.modifiers.contains(.option)
+            let modifiers = press.modifiers.intersection([.control, .option, .shift, .command])
+            if modifiers == .shift, let keepass = screen as? KeePassScreen,
+                keepass.pasteUsername(at: selection(in: keepass)) {
+                return .handled
+            }
             if menuOpen, !command, !option {
                 activateMenuItem(menuSelection)
                 return .handled
@@ -556,7 +561,7 @@ struct RootPaletteView: View {
                         open(.keepassFolder, highlighting: active)
                     }
                 }
-                .frame(maxWidth: Theme.Size.clipboardFilterMenuWidth)
+                .frame(maxWidth: Theme.Size.clipboardFilterMenuWidth, alignment: .trailing)
             }
             if !isCollapsed, vm.mode == .clipboard {
                 headerGutter(width: Theme.Spacing.md)

@@ -10,8 +10,6 @@ struct KeePassUnlockView: View {
     var body: some View {
         @Bindable var coordinator = coordinator
         VStack(spacing: Theme.Spacing.xxl) {
-            SymbolImage(name: "lock.shield", size: Theme.Size.dialogIcon)
-                .foregroundStyle(Theme.Colors.textTertiary)
             if hasDatabase {
                 Text(URL(fileURLWithPath: coordinator.store.databasePath).lastPathComponent)
                     .font(Theme.Typography.rowTitle)

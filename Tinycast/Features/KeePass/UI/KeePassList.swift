@@ -41,8 +41,9 @@ private struct KeePassRow: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.lg) {
-            SymbolImage(name: pinned ? "star.fill" : "key", size: Theme.Size.rowIcon)
+            SymbolImage(name: pinned ? "star.fill" : "key", size: Theme.Size.menuIcon)
                 .foregroundStyle(Theme.Colors.textSecondary)
+                .frame(width: Theme.Size.rowIcon, height: Theme.Size.rowIcon)
             Text(entry.title).font(Theme.Typography.rowTitle).lineLimit(1)
             Text(entry.username)
                 .font(Theme.Typography.rowTrailing)
@@ -51,6 +52,7 @@ private struct KeePassRow: View {
             Spacer(minLength: Theme.Spacing.md)
             if !entry.totp.isEmpty {
                 SymbolImage(name: "clock", size: Theme.Size.menuIcon)
+                    .frame(width: Theme.Size.rowIcon, height: Theme.Size.rowIcon)
                     .accessibilityLabel("One-time code available")
             }
             Text(entry.group)
@@ -59,7 +61,7 @@ private struct KeePassRow: View {
                 .lineLimit(1)
         }
         .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.md)
+        .padding(.vertical, Theme.Spacing.sm)
         .background(
             RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                 .fill(selected ? Theme.Colors.selection : hovered ? Theme.Colors.rowHover : .clear))

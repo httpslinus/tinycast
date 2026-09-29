@@ -31,7 +31,8 @@ nor JavaScript. KeePassXC remains a required external application; no library is
    means key-file-only access, matching KeePassXC's `--no-password` mode.
 3. Unlock. Search matches title, username, URL and group; all query words must match. The folder picker
    includes descendants. Pinned entries appear first and stay pinned per database.
-4. Return pastes the password; Command–Return copies it; Option–Return pastes a one-time code.
+4. Return pastes the password; Shift–Return pastes the username; Command–Return copies the password;
+   Option–Return pastes a one-time code.
    Actions (Command–K or right-click) also offers username/URL/code copy and paste, Open URL and pinning.
 5. Use Actions › Lock Database when finished. To refresh an externally edited database, lock and unlock it again.
    Actions › Change Database lets you choose another file, including while unlocked. Database actions
@@ -71,7 +72,7 @@ shortcuts are available on the unlock screen. Auto-lock's preset chooser uses Ta
 | Action | Shortcut |
 | --- | --- |
 | Paste / copy password | Return / Command–Return |
-| Paste / copy username | Shift–Command–U / Command–U |
+| Paste / copy username | Shift–Return or Shift–Command–U / Command–U |
 | Paste / copy one-time code | Option–Return / Shift–Command–T |
 | Paste / copy URL | Shift–Command–Y / Command–Y |
 | Open URL | Command–O |
