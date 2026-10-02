@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// Local conversations: search summaries, preview one, then explicitly open it as the active chat.
+/// Local conversations: search summaries, preview one, then explicitly open it in Quick AI.
 struct ChatHistoryScreen: PaletteScreen {
     let history: ChatHistoryStore
     let chat: AIChatState
-    let coordinator: AIChatCoordinator
+    let coordinator: QuickAICoordinator
     let vm: PaletteState
     let openActions: () -> Void
+    let metrics: InterfaceMetrics
 
     var rows: [ChatConversation] { history.search(vm.query) }
     let primaryActionTitle = "Open Chat"
@@ -29,12 +30,28 @@ struct ChatHistoryScreen: PaletteScreen {
 
     func secondary(at selection: Int) -> Bool { false }
 
-    func delete(at selection: Int) {
+    func perform(_ shortcut: PaletteShortcut, at selection: Int) -> Bool {
+        switch shortcut {
+        case .commandDelete, .delete:
+            delete(at: selection)
+            return true
+        case .deleteAll:
+            deleteAll()
+            return true
+        case .continueInChat:
+            guard let conversation = conversation(at: selection) else { return false }
+            coordinator.continueInChat(id: conversation.id)
+            return true
+        default: return false
+        }
+    }
+
+    private func delete(at selection: Int) {
         guard let conversation = conversation(at: selection) else { return }
         coordinator.deleteChat(id: conversation.id)
     }
 
-    func deleteAll() {
+    private func deleteAll() {
         Task { await coordinator.deleteAllChats() }
     }
 
@@ -64,7 +81,7 @@ struct ChatHistoryScreen: PaletteScreen {
                         openActions()
                     }
                 )
-                .frame(width: Theme.Size.clipboardListWidth)
+                .frame(width: metrics.size.clipboardListWidth)
                 Rectangle().fill(Theme.Colors.separator).frame(width: Theme.Size.hairline)
                 ChatHistoryPreview(history: history, chat: chat, conversationID: selected?.id)
             }
@@ -75,18 +92,24 @@ struct ChatHistoryScreen: PaletteScreen {
 @MainActor
 enum ChatHistoryActionsMenu {
     static func content(
-        conversation: ChatConversation, coordinator: AIChatCoordinator
+        conversation: ChatConversation, coordinator: QuickAICoordinator
     ) -> PopoverMenuContent {
         PopoverMenuContent(
-            header: conversation.title,
+            header: conversation.displayTitle,
             items: [
                 PopoverMenuItem(
-                    title: "Open Chat", systemImage: "bubble.left.and.bubble.right", shortcut: "↵"
+                    title: "Open Chat", systemImage: "sparkles", shortcut: "↵"
                 ) {
                     coordinator.openChat(id: conversation.id)
                 },
                 PopoverMenuItem(
-                    title: "Delete Chat", systemImage: "trash", shortcut: "⌃X",
+                    title: "Continue in AI Chat", systemImage: "bubble.left.and.bubble.right",
+                    shortcut: "⌘J"
+                ) {
+                    coordinator.continueInChat(id: conversation.id)
+                },
+                PopoverMenuItem(
+                    title: "Delete Chat", systemImage: "trash", startsSection: true, shortcut: "⌃X",
                     isDestructive: true
                 ) {
                     coordinator.deleteChat(id: conversation.id)

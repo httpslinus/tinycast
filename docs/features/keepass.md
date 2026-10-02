@@ -25,7 +25,7 @@ nor JavaScript. KeePassXC remains a required external application; no library is
 
 ## Using it
 
-1. Run **Search KeePass** from the launcher (or bind it in Settings › Commands).
+1. Run **Search KeePass** from the launcher (or bind it in Settings › KeePass).
 2. Choose a `.kdbx` database and enter its password. Actions › Choose Key File adds an optional
    key file. A blank password
    means key-file-only access, matching KeePassXC's `--no-password` mode.
@@ -85,7 +85,8 @@ shortcuts are available on the unlock screen. Auto-lock's preset chooser uses Ta
 ## Ownership and storage
 
 `AppCore` owns `KeePassStore`, `KeePassClipboard` and `KeePassCoordinator`, starts its lock observers in
-`start()` and stops it at termination. Views receive the coordinator through the palette environment.
+`start()` and stops it at termination. Views receive the coordinator through the palette and Settings environments. The palette screen owns
+its shortcuts and form Tab navigation; rows and forms use the palette's interface metrics.
 `KeePassService` runs the native process off the main actor; the pure CSV/entry/TOTP models import no UI.
 
 Only `keepassDatabasePath`, `keepassKeyFilePath`, `keepassAutoLockSeconds` (zero means Never)

@@ -13,8 +13,12 @@ enum BackupActions {
         var summary: SettingsBackup.ApplySummary
         var clipboardImported: Int
         var snippetsImported: Int
+        var snippetsNeedEnabling: Bool
         /// Set when the snippet files couldn't be written; the rest of the import still applied.
         var snippetsError: String?
+        var quicklinksImported: Int
+        /// Set when the library wouldn't open; the rest of the import still applied.
+        var quicklinksError: String?
         var missingImages: Int
     }
 
@@ -155,6 +159,18 @@ enum BackupActions {
                 snippetsError = error.localizedDescription
             }
         }
+        var quicklinksImported = 0
+        var quicklinksError: String?
+        if !result.quicklinks.isEmpty {
+            if core.quicklinks.isAvailable {
+                quicklinksImported =
+                    core.quicklinkCoordinator.addImportedQuicklinks(result.quicklinks).count
+                // Opening a link grants no permission class, so landing a library turns the switch on.
+                if quicklinksImported > 0 { core.settings.quicklinksEnabled = true }
+            } else {
+                quicklinksError = QuicklinkError.storageUnavailable.errorDescription
+            }
+        }
         let summary = result.backup.apply(to: core)
         let imported =
             result.clipboard.isEmpty
@@ -163,7 +179,10 @@ enum BackupActions {
             summary: summary,
             clipboardImported: imported,
             snippetsImported: snippetsImported,
+            snippetsNeedEnabling: snippetsImported > 0 && !core.settings.snippetsEnabled,
             snippetsError: snippetsError,
+            quicklinksImported: quicklinksImported,
+            quicklinksError: quicklinksError,
             missingImages: result.missingImages)
     }
 
@@ -199,10 +218,6 @@ enum BackupActions {
 
     // MARK: - Helpers
 
-    static func summaryText(_ s: SettingsBackup.ApplySummary) -> String {
-        appliedText(s) ?? nothingImportedText
-    }
-
     /// One sentence per category that actually moved, so an import is never silent.
     static func summaryText(_ summary: BackupApplier.Summary) -> String {
         var parts: [String] = []
@@ -217,6 +232,7 @@ enum BackupActions {
         if !imported.isEmpty {
             parts.append("Imported " + imported.joined(separator: ", ") + ".")
         }
+        if summary.snippetsNeedEnabling { parts.append(snippetsNeedEnablingText) }
         parts.append(contentsOf: summary.problems)
         return parts.isEmpty ? nothingImportedText : parts.joined(separator: " ")
     }
@@ -237,6 +253,43 @@ enum BackupActions {
 
     static let nothingImportedText = "Nothing to import from this file."
 
+    /// No import may grant keystroke listening, so say the switch an imported keyword needs is off.
+    private static let snippetsNeedEnablingText =
+        "Turn on Snippets in Settings to use their keywords."
+
+    /// Not everything an import applies settles in the running app, so say to relaunch.
+    private static let restartAfterImportText = "Quit and reopen Tinycast to finish."
+
+    /// One sentence per Raycast category that actually moved, shared by the pane and onboarding.
+    static func raycastText(_ outcome: RaycastOutcome) -> String {
+        var parts: [String] = []
+        if let applied = appliedText(outcome.summary) { parts.append(applied) }
+        if outcome.clipboardImported > 0 {
+            parts.append("Imported \(outcome.clipboardImported) clipboard entries.")
+        }
+        if outcome.snippetsImported > 0 {
+            let noun = outcome.snippetsImported == 1 ? "snippet" : "snippets"
+            parts.append("Imported \(outcome.snippetsImported) \(noun).")
+        }
+        if outcome.snippetsNeedEnabling { parts.append(snippetsNeedEnablingText) }
+        if let snippetsError = outcome.snippetsError {
+            parts.append("Couldn’t import snippets: \(snippetsError)")
+        }
+        if outcome.quicklinksImported > 0 {
+            let noun = outcome.quicklinksImported == 1 ? "quicklink" : "quicklinks"
+            parts.append("Imported \(outcome.quicklinksImported) \(noun).")
+        }
+        if let quicklinksError = outcome.quicklinksError {
+            parts.append("Couldn’t import quicklinks: \(quicklinksError)")
+        }
+        var message = parts.isEmpty ? nothingImportedText : parts.joined(separator: " ")
+        if outcome.missingImages > 0 {
+            message += " \(outcome.missingImages) images were unavailable and skipped."
+        }
+        if !parts.isEmpty { message += " \(restartAfterImportText)" }
+        return message
+    }
+
     /// nil when no settings applied, so a caller can compose one combined sentence.
     static func appliedText(_ s: SettingsBackup.ApplySummary) -> String? {
         var parts: [String] = []
@@ -245,10 +298,52 @@ enum BackupActions {
         if s.favorites > 0 { parts.append("\(s.favorites) favorites") }
         if s.hiddenItems > 0 { parts.append("\(s.hiddenItems) hidden items") }
         if s.aliases > 0 { parts.append("\(s.aliases) aliases") }
+        if s.pinnedEmoji > 0 { parts.append("\(s.pinnedEmoji) pinned emoji and symbols") }
         if s.customCommands > 0 { parts.append("\(s.customCommands) custom commands") }
         if s.quicklinks > 0 { parts.append("\(s.quicklinks) quicklinks") }
+        if s.windowLayouts > 0 { parts.append("\(s.windowLayouts) window layouts") }
+        if s.windowRooms > 0 { parts.append("\(s.windowRooms) rooms") }
+        if s.customWindowSizes > 0 {
+            parts.append("\(s.customWindowSizes) custom window sizes")
+        }
         guard !parts.isEmpty else { return nil }
         return "Applied " + parts.joined(separator: ", ") + "."
+    }
+
+    // MARK: - Settings file
+
+    /// Where settings.json lives for this channel, as the pane and its dialog spell it.
+    static var settingsFilePath: String {
+        (AppPaths.settingsFile().path as NSString).abbreviatingWithTildeInPath
+    }
+
+    /// Turning the mirror on over a file that already exists asks which side wins.
+    static func setSettingsFileEnabled(_ enabled: Bool, core: AppCore) async {
+        guard enabled else { return core.stopSettingsFile() }
+        guard FileManager.default.fileExists(atPath: AppPaths.settingsFile().path) else {
+            return core.startSettingsFile(importing: false)
+        }
+        let choice = await core.choose(
+            title: "Import the existing settings file?",
+            message:
+                "\(settingsFilePath) already exists. Import applies its settings here; Replace "
+                + "overwrites it with the current ones.",
+            symbol: importSymbol,
+            options: [
+                DialogAction(title: "Import"),
+                DialogAction(title: "Replace", role: .destructive),
+                DialogAction(title: "Cancel", role: .cancel)
+            ],
+            defaultIndex: 0)
+        switch choice {
+        case 0: core.startSettingsFile(importing: true)
+        case 1: core.startSettingsFile(importing: false)
+        default: break
+        }
+    }
+
+    static func revealSettingsFile() {
+        NSWorkspace.shared.activateFileViewerSelecting([AppPaths.settingsFile()])
     }
 
     private static func confirmExecutableImport(

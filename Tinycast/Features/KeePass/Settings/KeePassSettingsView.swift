@@ -5,13 +5,7 @@ struct KeePassSettingsView: View {
 
     var body: some View {
         Form {
-            Section {
-                SettingsRow(title: "Search KeePass", anchor: .keepassGlobalShortcuts) {
-                    ShortcutRecorder(action: .command(.searchKeePass))
-                }
-            } header: {
-                SettingsSectionHeader(.keepassGlobalShortcuts)
-            }
+            FeatureCommandsSection(owner: .keepass, anchor: .keepassGlobalShortcuts)
             Section {
                 fileRow(path: coordinator.store.databasePath, keyFile: false) {
                     SettingsRowTitle(.keepassDatabase, "Database")

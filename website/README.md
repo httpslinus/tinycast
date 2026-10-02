@@ -1,16 +1,15 @@
 # Tinycast website
 
-The marketing page and documentation for Tinycast, at
-<https://abue-ammar.github.io/tinycast/>.
+The marketing page and documentation for Tinycast, at <https://tinycast.dev>.
 
-Next.js (App Router) with a **static export** — there is no server behind the deployed site. Tailwind
-v4 for styling, [Fumadocs](https://fumadocs.dev) for the documentation section.
+Next.js (App Router) with a static export, Tailwind v4 for styling, and
+[Fumadocs](https://fumadocs.dev) for the documentation section. The upstream Worker remains under `worker/`, but this fork removes the donation page and links.
 
 ## Develop
 
 ```sh
 npm install
-npm run dev      # http://localhost:3000/tinycast
+npm run dev      # http://localhost:3000
 ```
 
 `npm install` runs `fumadocs-mdx`, which generates `.source/` from `content/docs/`. That directory is
@@ -18,18 +17,20 @@ generated and not committed.
 
 ## Scripts
 
-| Script           | Does                            |
-| ---------------- | ------------------------------- |
-| `npm run dev`    | Dev server                      |
-| `npm run build`  | Type-check and export to `out/` |
-| `npm run lint`   | oxlint                          |
-| `npm run format` | Prettier                        |
+| Script            | Does                                              |
+| ----------------- | ------------------------------------------------- |
+| `npm run dev`     | Dev server                                        |
+| `npm run build`   | Type-check and export to `out/`                   |
+| `npm run preview` | Build, then serve through the Worker |
+| `npm run lint`    | oxlint                                            |
+| `npm run format`  | Prettier                                          |
 
 ## Structure
 
 | Path               | Holds                                                                  |
 | ------------------ | ---------------------------------------------------------------------- |
 | `src/app/`         | Routes. `page.tsx` is the marketing page; `docs/` is the documentation |
+| `worker/`          | The Worker behind `/support`'s API                                     |
 | `src/components/`  | Page sections, with shared primitives in `ui/`                         |
 | `src/data/`        | All copy and content, so components stay free of prose                 |
 | `src/index.css`    | **The only design-token source.** Colors, type scale, shadows          |
@@ -58,20 +59,17 @@ Shiki highlighting is limited to `bash`, `json` and `markdown` in `source.config
 way — highlighting a keyboard shortcut or a placeholder buys nothing and costs bytes. Keyboard keys
 use `<kbd>`, which renders through the same keycap component as the marketing page.
 
-## Static build
+## Media
 
-This fork does not build or deploy the website through GitHub Actions. Run `npm run build`
-locally to generate the static export in `out/`.
+Files over 25 MiB cannot ship in `public/`. Put them in `media/` and reference them as
+`` `${site.cdn}/<name>` ``; uploads are manual in this fork. A new file extension also needs its content
+type added to `Scripts/upload-website-media.sh`.
 
-The site is served from the `/tinycast/` subpath, set as `basePath` in `next.config.mjs`. `next/link`
-and `next/image` prefix it automatically; a raw URL string does not, which is what `src/lib/asset.ts`
-is for.
+## Deploy
 
-To test the real deployed shape rather than the dev server:
+This fork has no website deployment workflow. To check the exported build locally:
 
 ```sh
 npm run build
-mkdir -p /tmp/pages && cp -r out /tmp/pages/tinycast
-cd /tmp/pages && python3 -m http.server 4321
-# http://localhost:4321/tinycast/
+cd out && python3 -m http.server 4321   # http://localhost:4321/
 ```

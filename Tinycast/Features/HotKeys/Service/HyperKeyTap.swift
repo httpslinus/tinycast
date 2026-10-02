@@ -70,8 +70,7 @@ private enum CapsLockRemap {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try process.run()
-            process.waitUntilExit()
+            try process.runObservingExit().wait()
             if process.terminationStatus != 0 {
                 NSLog("Tinycast: hidutil remap exited %d", process.terminationStatus)
             }
@@ -207,6 +206,9 @@ final class HyperKeyTap: HealthCheckable {
         }
     }
 
+    /// F18 carries fn like any function key, and a `flagsChanged` saying so reads as a real fn press.
+    private static let functionKeyFlagRaw = CGEventFlags.maskSecondaryFn.rawValue
+
     private func hyperized(_ flagsRaw: UInt64) -> UInt64 {
         (flagsRaw & ~strippedFlagsRaw) | hyperFlagsRaw
     }
@@ -236,6 +238,7 @@ final class HyperKeyTap: HealthCheckable {
     ) -> Decision {
         if key.tapUsesKeyEvents {
             // F18 arrives as keyDown/keyUp; convert both ends into flagsChanged transitions.
+            let flagsRaw = flagsRaw & ~Self.functionKeyFlagRaw
             switch type {
             case .keyDown:
                 if isAutorepeat { return .suppress }

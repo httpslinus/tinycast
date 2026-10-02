@@ -1,7 +1,7 @@
 enum SettingsTab: CaseIterable, Identifiable {
-    case general, applications, systemSettings, systemActions, commands, quicklinks, fallbacks, ai,
-        quickActions, fileSearch, notes, snippets, windowManagement, clipboard, keepass, emoji, calendar,
-        extensions, permissions, backup, about
+    case general, applications, systemSettings, systemActions, commands, quicklinks, appleShortcuts,
+        fallbacks, clipboard, snippets, fileSearch, windowManagement, navigation, notes, calendar, keepass, emoji,
+        ai, quickActions, extensions, permissions, backup, about
     /// The case, never an index: a selectable `List` flattens section and row IDs together.
     var id: Self { self }
 
@@ -13,12 +13,14 @@ enum SettingsTab: CaseIterable, Identifiable {
         case .systemActions: return "System Actions"
         case .commands: return "Commands"
         case .quicklinks: return "Quicklinks"
+        case .appleShortcuts: return "Apple Shortcuts"
         case .fallbacks: return "Fallbacks"
         case .ai: return "AI"
         case .quickActions: return "Quick Actions"
         case .fileSearch: return "File Search"
         case .notes: return "Notes"
         case .snippets: return "Snippets"
+        case .navigation: return "Navigation"
         case .windowManagement: return "Window Management"
         case .clipboard: return "Clipboard"
         case .keepass: return "KeePass"
@@ -39,12 +41,14 @@ enum SettingsTab: CaseIterable, Identifiable {
         case .systemActions: return "bolt"
         case .commands: return "terminal"
         case .quicklinks: return "link"
+        case .appleShortcuts: return "square.2.layers.3d"
         case .fallbacks: return "arrow.turn.down.right"
         case .ai: return "sparkles"
         case .quickActions: return "wand.and.sparkles"
         case .fileSearch: return "doc.text.magnifyingglass"
         case .notes: return "text.page"
         case .snippets: return "curlybraces"
+        case .navigation: return "arrow.left.arrow.right"
         case .windowManagement: return "macwindow"
         case .clipboard: return "doc.on.clipboard"
         case .keepass: return "lock.shield"
@@ -78,12 +82,14 @@ enum SettingsSection: CaseIterable, Identifiable {
         case .general: return [.general, .permissions]
         case .launcher:
             return [
-                .applications, .systemSettings, .systemActions, .commands, .quicklinks, .fallbacks
+                .applications, .systemSettings, .systemActions, .commands, .quicklinks,
+                .appleShortcuts, .fallbacks
             ]
         case .features:
+            // Everyday tools first; AI and extensions are opt-in extras.
             return [
-                .ai, .quickActions, .fileSearch, .notes, .snippets, .windowManagement, .clipboard,
-                .keepass, .emoji, .calendar, .extensions
+                .clipboard, .snippets, .fileSearch, .windowManagement, .navigation, .notes,
+                .calendar, .keepass, .emoji, .ai, .quickActions, .extensions
             ]
         case .advanced: return [.backup, .about]
         }

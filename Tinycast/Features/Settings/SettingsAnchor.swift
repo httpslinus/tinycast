@@ -12,6 +12,7 @@ extension SettingsAnchor {
     static let generalSearch = Self(tab: .general, title: "Search")
     static let generalHyperKey = Self(tab: .general, title: "Hyper Key")
     static let generalAppearance = Self(tab: .general, title: "Appearance")
+    static let generalCalculator = Self(tab: .general, title: "Calculator")
     static let generalGeneral = Self(tab: .general, title: "General")
 
     static let applicationsSearchScopes = Self(tab: .applications, title: "Search Scopes")
@@ -25,18 +26,21 @@ extension SettingsAnchor {
     static let commandsCustomCommands = Self(tab: .commands, title: "Custom Commands")
 
     static let quicklinksQuicklinks = Self(tab: .quicklinks, title: "Quicklinks")
+    static let quicklinksCommands = Self(tab: .quicklinks, title: "Commands")
     static let quicklinksBehaviour = Self(tab: .quicklinks, title: "Behaviour")
     static let quicklinksImportExport = Self(tab: .quicklinks, title: "Import & Export")
+
+    static let appleShortcutsAppleShortcuts = Self(tab: .appleShortcuts, title: "Apple Shortcuts")
+    static let appleShortcutsShortcuts = Self(tab: .appleShortcuts, title: "Shortcuts")
 
     static let fallbacksFallbacks = Self(tab: .fallbacks, title: "Fallbacks")
 
     static let aiAI = Self(tab: .ai, title: "AI")
+    static let aiProviders = Self(tab: .ai, title: "Providers")
     static let aiDefault = Self(tab: .ai, title: "Default")
     static let aiChat = Self(tab: .ai, title: "Chat")
     static let aiConversations = Self(tab: .ai, title: "Conversations")
     static let aiSystemPrompt = Self(tab: .ai, title: "System prompt")
-    static let aiChatGPTSubscription = Self(tab: .ai, title: "ChatGPT Subscription")
-    static let aiAPIConnections = Self(tab: .ai, title: "API Connections")
     static let aiMCPServers = Self(tab: .ai, title: "MCP Servers")
     static let aiCommands = Self(tab: .ai, title: "Commands")
 
@@ -51,30 +55,40 @@ extension SettingsAnchor {
     static let fileSearchIgnorePatterns = Self(tab: .fileSearch, title: "Ignore Patterns")
 
     static let notesNotes = Self(tab: .notes, title: "Notes")
+    static let notesOptions = Self(tab: .notes, title: "Options")
     static let notesCommands = Self(tab: .notes, title: "Commands")
 
     static let snippetsSnippets = Self(tab: .snippets, title: "Snippets")
-    static let snippetsGlobalShortcut = Self(tab: .snippets, title: "Global Shortcut")
+    static let snippetsCommands = Self(tab: .snippets, title: "Commands")
     static let snippetsLibrary = Self(tab: .snippets, title: "Library")
+
+    static let navigationNavigation = Self(tab: .navigation, title: "Navigation")
+    static let navigationCommands = Self(tab: .navigation, title: "Commands")
+    static let navigationMenuSearch = Self(tab: .navigation, title: "Search Menu Bar Items")
 
     static let windowManagementWindowManagement = Self(
         tab: .windowManagement, title: "Window Management")
+    static let windowManagementLayouts = Self(tab: .windowManagement, title: "Window Layouts")
+    static let windowManagementRooms = Self(tab: .windowManagement, title: "Rooms")
+    static let windowManagementLayoutCommands = Self(
+        tab: .windowManagement, title: "Layout and Room Commands")
     static let windowManagementOptions = Self(tab: .windowManagement, title: "Options")
+    static let windowManagementCustomSizes = Self(tab: .windowManagement, title: "Custom Sizes")
 
-    static let clipboardGlobalShortcuts = Self(tab: .clipboard, title: "Global Shortcuts")
+    static let clipboardClipboard = Self(tab: .clipboard, title: "Clipboard")
+    static let clipboardCommands = Self(tab: .clipboard, title: "Commands")
     static let clipboardHistory = Self(tab: .clipboard, title: "History")
     static let clipboardDisabledApplications = Self(
         tab: .clipboard, title: "Disabled Applications")
 
+    static let emojiCommands = Self(tab: .emoji, title: "Commands")
     static let keepassGlobalShortcuts = Self(tab: .keepass, title: "Global Shortcuts")
     static let keepassDatabase = Self(tab: .keepass, title: "Database")
     static let keepassSecurity = Self(tab: .keepass, title: "Security")
-
-    static let emojiGlobalShortcuts = Self(tab: .emoji, title: "Global Shortcuts")
     static let emojiAppearance = Self(tab: .emoji, title: "Appearance")
 
     static let calendarCalendar = Self(tab: .calendar, title: "Calendar")
-    static let calendarSchedule = Self(tab: .calendar, title: "Schedule")
+    static let calendarCommands = Self(tab: .calendar, title: "Commands")
     static let calendarJoining = Self(tab: .calendar, title: "Joining")
     static let calendarMenuBar = Self(tab: .calendar, title: "Menu Bar")
     static let calendarCalendars = Self(tab: .calendar, title: "Calendars")
@@ -91,6 +105,7 @@ extension SettingsAnchor {
     static let backupExport = Self(tab: .backup, title: "Export")
     static let backupImport = Self(tab: .backup, title: "Import")
     static let backupImportFromRaycast = Self(tab: .backup, title: "Import from Raycast")
+    static let backupSettingsFile = Self(tab: .backup, title: "Settings File")
 
     static let aboutAbout = Self(tab: .about, title: "About")
     static let aboutLinks = Self(tab: .about, title: "Links")

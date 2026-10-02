@@ -10,14 +10,28 @@ import { describeError, log, settle } from "./host.js";
 import { fireTimer, setUncaughtHandler } from "./polyfills.js";
 import { configureNodeShims } from "./node-shims.js";
 import { defineModule, evaluateCommonJS } from "./modules.js";
+import { resolveComponent } from "./async-component.js";
 import { NavigationRoot, setFieldCommandHandler } from "./api/components.js";
 import { Surface } from "./reconciler.js";
 import { raycastApi } from "./api/index.js";
 import { configureSystem, runToastAction } from "./api/system.js";
+import { WebSocket } from "./websocket.js";
 
-defineModule("react", React);
-defineModule("react/jsx-runtime", JSXRuntime);
-defineModule("react/jsx-dev-runtime", JSXRuntime);
+const reactModule = {
+  ...React,
+  createElement: (type, ...rest) => createElement(resolveComponent(type), ...rest),
+};
+const jsxModule = {
+  ...JSXRuntime,
+  jsx: (type, props, key) => JSXRuntime.jsx(resolveComponent(type), props, key),
+  jsxs: (type, props, key) => JSXRuntime.jsxs(resolveComponent(type), props, key),
+};
+reactModule.default = reactModule;
+jsxModule.default = jsxModule;
+
+defineModule("react", reactModule);
+defineModule("react/jsx-runtime", jsxModule);
+defineModule("react/jsx-dev-runtime", jsxModule);
 defineModule("@raycast/api", raycastApi);
 // react-dom only appears in bundles defensively; make the import resolve and the calls explain.
 defineModule("react-dom", {
@@ -28,6 +42,7 @@ defineModule("react-dom", {
   flushSync: (fn) => fn?.(),
   version: React.version,
 });
+globalThis.WebSocket = WebSocket;
 
 const sessions = new Map();
 
@@ -102,8 +117,7 @@ globalThis.__tinycast = {
     return "ok";
   },
 
-  /// Load and start one command. `mode` is "view" or "no-view"; a view command's default export is a
-  /// component, a no-view command's is an async function.
+  // Menu-bar and view commands mount components; no-view commands await their default export.
   start(sessionId, code, filename, dirname, mode, contextJson) {
     const context = JSON.parse(contextJson || "{}");
     configureSystem(context);
@@ -118,11 +132,11 @@ globalThis.__tinycast = {
     try {
       const exports = evaluateCommonJS(code, filename, dirname);
       const entry = exports?.default ?? exports;
-      if (mode === "view") {
+      if (mode !== "no-view") {
         if (typeof entry !== "function") {
           throw new Error("A view command must default-export a React component.");
         }
-        session.mountView(createElement(entry, launchProps));
+        session.mountView(createElement(resolveComponent(entry), launchProps));
       } else {
         if (typeof entry !== "function") {
           throw new Error("A no-view command must default-export a function.");
@@ -139,12 +153,16 @@ globalThis.__tinycast = {
   },
 
   /// Route a UI event back to the callback it came from.
-  dispatch(sessionId, handlerId, argsJson) {
+  dispatch(sessionId, handlerId, argsJson, completesSession = false) {
     const session = sessions.get(sessionId);
     if (!session?.surface) return "0";
     try {
       const args = JSON.parse(argsJson || "[]").map(reviveArg);
-      return session.surface.dispatch(handlerId, args) ? "1" : "0";
+      const dispatched = session.surface.dispatch(
+        handlerId, args, completesSession ? () => hostCalls.finished(sessionId) : undefined,
+      );
+      if (!dispatched && completesSession) hostCalls.finished(sessionId);
+      return dispatched ? "1" : "0";
     } catch (error) {
       session.fail(error);
       return "0";

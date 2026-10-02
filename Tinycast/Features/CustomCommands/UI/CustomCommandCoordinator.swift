@@ -4,7 +4,6 @@ import AppKit
 @MainActor
 final class CustomCommandCoordinator {
     private let store: CustomCommandStore
-    private let argumentSession: CustomCommandArgumentSession
     private let settings: AppSettings
     private let appIndex: AppIndex
     private let paletteCoordinator: PaletteCoordinator
@@ -30,7 +29,6 @@ final class CustomCommandCoordinator {
 
     init(
         store: CustomCommandStore,
-        argumentSession: CustomCommandArgumentSession,
         settings: AppSettings,
         appIndex: AppIndex,
         paletteCoordinator: PaletteCoordinator,
@@ -44,7 +42,6 @@ final class CustomCommandCoordinator {
         core: AppCore
     ) {
         self.store = store
-        self.argumentSession = argumentSession
         self.settings = settings
         self.appIndex = appIndex
         self.paletteCoordinator = paletteCoordinator
@@ -98,20 +95,78 @@ final class CustomCommandCoordinator {
         return count
     }
 
+    // MARK: - Importing
+
+    /// Adds a folder of Raycast script commands, skipping any name already in the library.
+    func importScriptDirectory() async {
+        guard let directory = chooseScriptDirectory() else { return }
+        let drafts = await Task.detached(priority: .userInitiated) {
+            RaycastScriptImport.scan(directory: directory)
+        }.value
+        guard !drafts.isEmpty else {
+            await core.showNotice(
+                title: "Nothing to Import",
+                message: "No Raycast script commands were found in this folder.",
+                symbol: CustomCommand.sfSymbol, tone: .neutral)
+            return
+        }
+        guard await confirmScriptImport(count: drafts.count) else { return }
+        let added = store.add(contentsOf: drafts)
+        // Everything offered was already here, so say so rather than "0 imported".
+        guard added > 0 else {
+            await core.showNotice(
+                title: "Nothing to Import",
+                message: "Every script in this folder is already in your library.",
+                symbol: CustomCommand.sfSymbol, tone: .neutral)
+            return
+        }
+        await core.showNotice(
+            title: "Scripts Imported",
+            message: importSummary(added: added, offered: drafts.count),
+            symbol: CustomCommand.sfSymbol, tone: .success)
+    }
+
+    /// An accessory app must activate first, or the panel opens behind the frontmost app.
+    private func chooseScriptDirectory() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Import"
+        panel.message = "Choose a folder of Raycast script commands."
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    /// Scripts run arbitrary code, so this warns the way a backup of custom commands does.
+    private func confirmScriptImport(count: Int) async -> Bool {
+        await core.confirm(
+            title: count == 1 ? "Import 1 script?" : "Import \(count) scripts?",
+            message:
+                "Imported commands run these files with your user account. Only import scripts you "
+                + "trust.",
+            symbol: CustomCommand.sfSymbol, confirmTitle: "Import", confirmRole: .standard)
+    }
+
+    private func importSummary(added: Int, offered: Int) -> String {
+        let imported = added == 1 ? "Imported 1 command." : "Imported \(added) commands."
+        guard offered > added else { return imported }
+        return imported + " Skipped \(offered - added) already in your library."
+    }
+
     // MARK: - Running
 
-    /// The one funnel for palette and hotkey, so neither form nor confirmation is bypassed.
-    func runCustomCommand(id: UUID) {
+    /// The one funnel, so no entry point skips a required value or the confirmation.
+    func runCustomCommand(id: UUID, values: [String: String] = [:]) {
         // Also the feature switch: with it off a registered hotkey must run nothing.
         guard settings.customCommandsEnabled else { return }
         guard let command = store.command(id: id), command.isEnabled else { return }
-        guard command.arguments.isEmpty else {
-            argumentSession.begin(command: command)
-            // Never a restored mode: this screen is always a fresh prompt, never a resumed one.
-            paletteCoordinator.showPalette(mode: .customCommandArguments)
+        guard let arguments = command.positionalValues(from: values) else {
+            paletteCoordinator.showArguments(of: AppEntry(command), values: values)
             return
         }
-        perform(command, arguments: [])
+        perform(command, arguments: arguments)
     }
 
     /// The launcher fallback: a one-off shell line, streamed into the window every run uses.
@@ -132,19 +187,6 @@ final class CustomCommandCoordinator {
     private func rerunOutput(id: UUID) {
         guard let last = lastShellCommand, last.id == id else { return runCustomCommand(id: id) }
         runShellCommand(last.text)
-    }
-
-    /// ↵ in the argument form. Returns false while more arguments remain.
-    @discardableResult
-    func submitCustomCommandArgument(_ value: String) -> Bool {
-        guard let filled = argumentSession.submit(value) else { return false }
-        argumentSession.cancel()
-        perform(filled.command, arguments: filled.values)
-        return true
-    }
-
-    func cancelCustomCommandArguments() {
-        argumentSession.cancel()
     }
 
     /// A Dock click while a command is running belongs to its window, not to a fresh launcher.

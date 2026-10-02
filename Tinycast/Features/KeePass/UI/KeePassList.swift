@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct KeePassList: View {
+    @Environment(\.metrics) private var metrics
     @Environment(KeePassCoordinator.self) private var coordinator
     let entries: [KeePassEntry]
     let selectedID: String?
@@ -20,9 +21,9 @@ struct KeePassList: View {
                             .onRightClick { onActions(entry) }
                     }
                 }
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.top, Theme.Spacing.xs)
-                .padding(.bottom, Theme.Spacing.md)
+                .padding(.horizontal, metrics.spacing.md)
+                .padding(.top, metrics.spacing.xs)
+                .padding(.bottom, metrics.spacing.md)
                 .hideNativeScrollers()
                 .scrollOriginAnchor()
             }
@@ -34,36 +35,37 @@ struct KeePassList: View {
 }
 
 private struct KeePassRow: View {
+    @Environment(\.metrics) private var metrics
     let entry: KeePassEntry
     let selected: Bool
     let pinned: Bool
     @State private var hovered = false
 
     var body: some View {
-        HStack(spacing: Theme.Spacing.lg) {
-            SymbolImage(name: pinned ? "star.fill" : "key", size: Theme.Size.menuIcon)
+        HStack(spacing: metrics.spacing.lg) {
+            SymbolImage(name: pinned ? "star.fill" : "key", size: metrics.size.menuIcon)
                 .foregroundStyle(Theme.Colors.textSecondary)
-                .frame(width: Theme.Size.rowIcon, height: Theme.Size.rowIcon)
-            Text(entry.title).font(Theme.Typography.rowTitle).lineLimit(1)
+                .frame(width: metrics.size.rowIcon, height: metrics.size.rowIcon)
+            Text(entry.title).font(metrics.typography.rowTitle).lineLimit(1)
             Text(entry.username)
-                .font(Theme.Typography.rowTrailing)
+                .font(metrics.typography.rowTrailing)
                 .foregroundStyle(Theme.Colors.textSecondary)
                 .lineLimit(1)
-            Spacer(minLength: Theme.Spacing.md)
+            Spacer(minLength: metrics.spacing.md)
             if !entry.totp.isEmpty {
-                SymbolImage(name: "clock", size: Theme.Size.menuIcon)
-                    .frame(width: Theme.Size.rowIcon, height: Theme.Size.rowIcon)
+                SymbolImage(name: "clock", size: metrics.size.menuIcon)
+                    .frame(width: metrics.size.rowIcon, height: metrics.size.rowIcon)
                     .accessibilityLabel("One-time code available")
             }
             Text(entry.group)
-                .font(Theme.Typography.rowTrailing)
+                .font(metrics.typography.rowTrailing)
                 .foregroundStyle(Theme.Colors.textTertiary)
                 .lineLimit(1)
         }
-        .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.sm)
+        .padding(.horizontal, metrics.spacing.md)
+        .padding(.vertical, metrics.spacing.sm)
         .background(
-            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+            RoundedRectangle(cornerRadius: metrics.radius.row, style: .continuous)
                 .fill(selected ? Theme.Colors.selection : hovered ? Theme.Colors.rowHover : .clear))
         .armedHover($hovered)
         .accessibilityElement(children: .combine)

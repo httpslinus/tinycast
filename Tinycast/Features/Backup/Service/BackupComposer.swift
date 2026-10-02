@@ -37,11 +37,11 @@ enum BackupComposer {
         if categories.contains(.learning) {
             // From memory, not the files: the ranking store persists asynchronously.
             let encoder = BackupBundle.encoder
-            plan.learning[.ranking] = try? encoder.encode(core.launcherRanking.records)
+            plan.learning[.ranking] = try? encoder.encode(core.launcherRanking.visits)
             plan.learning[.emoji] = try? encoder.encode(core.frequentEmoji.records)
             plan.learning[.calculator] = try? encoder.encode(core.calcHistory.entries)
             plan.learningRecords =
-                core.launcherRanking.records.count + core.frequentEmoji.records.count
+                core.launcherRanking.visits.count + core.frequentEmoji.records.count
                 + core.calcHistory.entries.count
         }
         return plan
@@ -134,8 +134,18 @@ enum BackupComposer {
             }
             imageName = name
         }
+        // A referenced file is exported as its path; a backup never carries bytes it never held.
+        if item.kind == .file, item.filePath.map(FileManager.default.fileExists) != true {
+            return nil
+        }
+        let kind: BackupClipboardItem.Kind
+        switch item.kind {
+        case .text: kind = .text
+        case .image: kind = .image
+        case .file: kind = .file
+        }
         return BackupClipboardItem(
-            kind: item.kind == .image ? .image : .text, text: item.text, imageName: imageName,
+            kind: kind, text: item.text, imageName: imageName,
             createdAt: item.createdAt, sourceBundleID: item.sourceBundleID,
             pinnedAt: item.pinnedAt)
     }

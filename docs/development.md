@@ -41,17 +41,19 @@ Xcode, prefix with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (t
 project settings in `project.yml`, run `xcodegen generate` and commit the result. There is no
 `Package.swift`, and `Bundle.module` must never be used.
 
-The `icon` file type in `project.yml` keeps `tinycast.icon` as one Icon Composer package in the
-Resources phase. It must not be expanded into loose JSON/SVG files: Xcode compiles the package into
-the app icon and writes the icon keys into the built Info.plist.
+The app target builds and embeds `ClipboardTextHelper` under `Contents/Helpers`, signing it on copy.
+Build the app scheme to include it; copying only the main executable omits OCR support. The helper's
+executable name stays fixed even when release builds override the app's product name for a channel.
 
 ### The dev channel
 
 Debug builds are a separate channel: **`Tinycast Dev.app`**, bundle id `com.tinycast.app.dev`. Every
 persisted thing is keyed by bundle id — `~/Library/Preferences/<id>.plist` (settings and hotkey
 bindings), `~/Library/Application Support/<id>/` (the onboarding marker, Notes, snippets, quicklinks,
-clipboard history, calculator history, launch ranking and frequent emoji),
-`~/Library/Caches/<id>/` (exchange rates), the `SMAppService`
+clipboard history, calculator history, launch ranking and frequent emoji; Notes and snippets unless
+a folder is chosen),
+`~/Library/Caches/<id>/` (exchange rates), the opt-in
+`~/.config/tinycast-dev/settings.json` (`tinycast` on stable), the `SMAppService`
 login item, and the Accessibility / Input Monitoring (TCC) grants — so a local build can neither read
 nor clobber an installed app's state, and both run side by side.
 
@@ -111,9 +113,13 @@ It reads the source lists from `run-tests.sh` itself, so they cannot drift from 
 compiles. `Scripts/sync-lsp.sh` runs it too. Three things it has to get right, all of which fail
 silently otherwise: every path is absolute, because `sourcekit-lsp` resolves the command itself and does
 not apply `directory` to relative arguments; the command carries an explicit `-sdk`; and each entry
-claims **only its own harness** in `files`. The command still lists every shipped source it compiles, so
-symbols resolve inside the harness — but claiming those sources too would hand them this three-file
-command instead of the app's, and `.compile` is last-wins.
+claims **only files under `Tests/`** — its harness plus any helper compiled beside it. The command
+still lists every shipped source it compiles, so symbols resolve inside the harness, but claiming a
+shipped source too would hand it this three-file command instead of the app's, and `.compile` is
+last-wins.
+
+A benchmark that stays out of the suite still needs flags, so `run-tests.sh` registers it as
+`run index <name> <source...>`: `--index` emits its compile command and the runner never queues it.
 
 Re-run it after adding a harness, then **Swift: Restart LSP Server** from the Command Palette — an
 already-running server does not re-read `.compile`.
@@ -140,7 +146,7 @@ The comment policy in [standards.md](standards.md#comments) is deliberately not 
 and this script cannot disagree. `.swift-format` at the repo root tunes it to this tree; without it the
 stock config defaults to 2-space indent and rewrites all 200 files.
 
-Both `*.generated.swift` files are excluded: formatting one is hand-editing it, and the next
+Every `*.generated.swift` file is excluded: formatting one is hand-editing it, and the next
 `node Scripts/gen-emoji.js` would revert it. swift-format also refuses any file that does not parse, so
 a failure from either command is a syntax error rather than a tooling problem — and it is why ⌘S looks
 like it does nothing while a file is mid-edit with unbalanced braces.
@@ -158,19 +164,27 @@ Xcode's re-indent (⌃I), as it always has been. Two consequences worth knowing:
 - `force_try` is an error; `force_cast` only warns, because the AX and AppKit bridges have four
   legitimate ones.
 
-Errors block, warnings do not. CI runs this same script on every PR and annotates the diff with each
-violation — see [release.md](release.md#continuous-integration) — so run it locally first rather than
-finding out from a review.
+Errors block, warnings do not. No CI runs this script; CodeRabbit runs SwiftLint on each PR but not
+the settings-search check, so run it locally before you open one.
 
 ## Generated data
 
-Two Swift files are emitted by scripts and must never be hand-edited. Both download their source, so
+Three Swift files are emitted by scripts and must never be hand-edited. Each downloads its source, so
 run them online, then commit the result:
 
 ```sh
 node Scripts/gen-emoji.js            # -> Tinycast/Features/Emoji/Model/EmojiData.generated.swift
+                                     #    + Tinycast/Resources/EmojiKeywords/<language>.txt
 node Scripts/gen-currencies.js       # -> Tinycast/Features/Calculator/Model/CurrencyData.generated.swift
+node Scripts/gen-countries.js        # -> Tinycast/Features/Calculator/Model/CountryZoneData.generated.swift
 ```
+
+`gen-emoji.js` also writes one CLDR keyword pack per language in its `KEYWORD_LOCALES`; adding a
+language is one line there. Pass a directory to keep the downloads between runs:
+`node Scripts/gen-emoji.js /tmp/emoji-sources`.
+
+`gen-countries.js` joins IANA's `zone.tab` with CLDR's `en` territory names on the ISO 3166 code. Re-run
+it when IANA adds or moves a country's zone; see [calculator.md](features/calculator.md#time-zones).
 
 `gen-currencies.js` joins three sources on the ISO code: the **fiat rate feed**'s own quote list — the
 same feed `CurrencyRateStore` fetches rates from, so the table and the rate source cannot drift apart

@@ -26,23 +26,26 @@ struct ExtensionTests {
         var huds: [String] = []
         var oauthTokens: [String: String] = [:]
         private let fetcher = ExtensionFetcher()
+        private let sockets = ExtensionWebSocketBridge()
 
         func perform(api: String, method: String, arguments: [RenderValue]) async throws -> String {
             calls.append("\(api).\(method)")
-            if api == "proc", method == "run" {
-                if ProcessInfo.processInfo.environment["EXT_TEST_VERBOSE"] != nil {
-                    let spec = arguments.first?.objectValue ?? [:]
-                    let args = (spec["args"]?.arrayValue ?? []).compactMap(\.stringValue)
-                    print(
-                        "  proc.run: \(spec["command"]?.stringValue ?? "?") \(args.joined(separator: " "))"
-                            + "  [shell=\(spec["shell"]?.boolValue ?? false) detached=\(spec["detached"]?.boolValue ?? false)]"
-                    )
-                }
+            if api == "proc", method == "wait" {
                 return ExtensionRuntime.jsonString(
-                    from: try await ExtensionAsyncProcess.run(arguments.first))
+                    from: try await ExtensionAsyncProcess.wait(arguments.first))
+            }
+            if api == "proc", method == "read" {
+                return ExtensionRuntime.jsonString(from: try await ExtensionAsyncProcess.read(arguments))
             }
             if api == "fetch" {
                 return ExtensionRuntime.jsonString(from: try await fetcher.request(arguments.first))
+            }
+            if api == "websocket" {
+                return ExtensionRuntime.jsonString(
+                    from: try await sockets.perform(method: method, arguments: arguments))
+            }
+            if api == "dns" {
+                return ExtensionRuntime.jsonString(from: await ExtensionNameResolver.resolve(arguments.first))
             }
             switch "\(api).\(method)" {
             case "feedback.showToast":
@@ -78,6 +81,10 @@ struct ExtensionTests {
             default:
                 return ""
             }
+        }
+
+        func sessionEnded() {
+            sockets.closeAll()
         }
     }
 
@@ -187,10 +194,122 @@ struct ExtensionTests {
         screenChecks()
         actionIconChecks()
         oauthUnitChecks()
+        deepLinkChecks()
+        nodeShimChecks()
         await runtimeChecks()
+        await searchAccessoryRuntimeChecks()
+        await nodeContractChecks()
+        await webAssemblyChecks()
+        await asyncComponentChecks()
+        await menuBarRuntimeChecks()
+        await menuBarHostChecks()
+        await ExtensionFetchTests.runChecks()
 
         print("\n\(passes) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
+    }
+
+    static func nodeShimChecks() {
+        let result = ExtensionNodeShims().perform(api: "os", method: "cpus", argsJSON: "[]")
+        guard
+            let data = result.data(using: .utf8),
+            let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            envelope["ok"] as? Bool == true,
+            let processors = envelope["value"] as? [[String: Any]]
+        else {
+            check("os.cpus host call succeeds", false, result)
+            return
+        }
+
+        check(
+            "os.cpus returns every processor",
+            processors.count == ProcessInfo.processInfo.processorCount,
+            "\(processors.count)")
+        let expectedStates = Set(["user", "nice", "sys", "idle", "irq"])
+        let valid = processors.allSatisfy { processor in
+            guard
+                processor["model"] is String,
+                processor["speed"] is NSNumber,
+                let times = processor["times"] as? [String: NSNumber],
+                Set(times.keys) == expectedStates
+            else { return false }
+            return times.values.allSatisfy { $0.doubleValue.isFinite && $0.doubleValue >= 0 }
+        }
+        check("os.cpus returns finite Node timing fields", valid, result)
+
+        func value(_ method: String) -> Any? {
+            let result = ExtensionNodeShims().perform(api: "os", method: method, argsJSON: "[]")
+            guard let data = result.data(using: .utf8),
+                let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                envelope["ok"] as? Bool == true
+            else { return nil }
+            return envelope["value"]
+        }
+        let uptime = (value("uptime") as? NSNumber)?.doubleValue
+        check("os.uptime returns the system uptime", uptime.map { $0 > 0 } == true)
+        let freeMemory = (value("freemem") as? NSNumber)?.doubleValue
+        check(
+            "os.freemem returns finite bytes",
+            freeMemory.map { $0.isFinite && $0 >= 0 && $0 <= Double(ProcessInfo.processInfo.physicalMemory) }
+                == true)
+        let loadAverages = value("loadavg") as? [NSNumber]
+        check(
+            "os.loadavg returns three finite values",
+            loadAverages?.count == 3
+                && loadAverages?.allSatisfy { $0.doubleValue.isFinite && $0.doubleValue >= 0 } == true)
+    }
+
+    @MainActor
+    static func menuBarRuntimeChecks() async {
+        for (value, expected) in [("10m", 600.0), ("1h", 3600), ("1d", 86400), ("30s", 30), ("1s", 10)] {
+            check("interval \(value)", ExtensionRefreshPolicy.parse(value, floor: 10) == expected)
+        }
+        for value in ["", "0m", "-1m", "NaNm", "Infinityh", "1e308d", "5x"] {
+            check("reject interval \(value)", ExtensionRefreshPolicy.parse(value, floor: 10) == nil)
+        }
+        let (runtime, _, recorder) = makeRuntime()
+        defer { runtime.shutdown() }
+        try? await runtime.boot(config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+        var context = launchContext(mode: .menuBar)
+        context.launchType = .background
+        context.launchContext = ["source": .string("fixture")]
+        let code = #"""
+            const React = require("react");
+            const { MenuBarExtra, environment } = require("@raycast/api");
+            module.exports.default = function(props) {
+              const [title, setTitle] = React.useState(props.launchType + "|" + environment.launchType);
+              return React.createElement(MenuBarExtra, { title, tooltip: props.launchContext.source },
+                React.createElement(MenuBarExtra.Item, { title: "Refresh", onAction: async (event) => {
+                  await new Promise(resolve => setTimeout(resolve, 40));
+                  setTitle(event.type);
+                }, alternate: React.createElement(MenuBarExtra.Item, { title: "Alternate", onAction() {} }) }));
+            };
+            """#
+        await runtime.start(
+            session: "bar", code: code, file: URL(fileURLWithPath: "/tmp/menu.js"),
+            mode: .menuBar, context: context)
+        await settle()
+        let root = recorder.trees.last?.activeRoot
+        check("menu-bar renders in JavaScriptCore", root?.type == "MenuBarExtra", recorder.failures.joined())
+        check(
+            "background launch reaches props and environment",
+            root?.string("title") == "background|background")
+        check("launch context reaches props", root?.string("tooltip") == "fixture")
+        check(
+            "alternate survives serialization",
+            root?.children.first?.node("alternate")?.handler("onAction") != nil)
+        if let handler = root?.children.first?.handler("onAction") {
+            await runtime.dispatch(
+                session: "bar", handler: handler, payload: #"[{"type":"right-click"}]"#,
+                completesSession: true)
+            check("menu action does not finish before its promise", !recorder.finished)
+            await settle()
+            check("menu action finishes after its promise", recorder.finished)
+            check(
+                "menu action forwards event",
+                recorder.trees.last?.activeRoot?.string("title") == "right-click")
+        }
+        await runtime.stop(session: "bar")
     }
 
     static func manifestChecks() {
@@ -208,7 +327,12 @@ struct ExtensionTests {
                 [
                     "name": "mode", "type": "dropdown", "default": "b",
                     "data": [["title": "A", "value": "a"], ["title": "B", "value": "b"]]
-                ]
+                ],
+                [
+                    "name": "editor", "type": "appPicker",
+                    "default": "/System/Applications/Utilities/Terminal.app"
+                ],
+                ["name": "browser", "type": "appPicker"]
             ],
             "commands": [
                 ["name": "search", "title": "Search", "mode": "view", "keywords": ["find"]],
@@ -230,8 +354,7 @@ struct ExtensionTests {
         check("commands", manifest.commands.count == 4, "\(manifest.commands.count)")
         check("view mode", manifest.commands[0].mode == .view)
         check("no-view mode", manifest.commands[1].mode == .noView)
-        check("menu-bar is unsupported", manifest.commands[2].mode.isSupported == false)
-        check("menu-bar explains itself", manifest.commands[2].mode.unsupportedReason != nil)
+        check("menu-bar mode", manifest.commands[2].mode == .menuBar)
         // Extensions branch on `environment.appearance`, so the host must not report a fixed one.
         check(
             "a dark host reports dark",
@@ -265,6 +388,16 @@ struct ExtensionTests {
         check("dropdown options", prefs["mode"]?.options.count == 2)
         check("dropdown default", prefs["mode"]?.effectiveDefault == .string("b"))
 
+        // Raycast dereferences `preference.name` unconditionally, so a bare path crashes the command.
+        let picked = prefs["editor"]?.runtimeValue(nil)?.jsonValue as? [String: Any]
+        check(
+            "an app picker resolves to an Application", picked?["name"] as? String == "Terminal",
+            String(describing: picked))
+        check(
+            "an app picker carries its bundle id",
+            picked?["bundleId"] as? String == "com.apple.Terminal", String(describing: picked))
+        check("an unset app picker is absent", prefs["browser"]?.runtimeValue(nil) == nil)
+
         // A manifest with no commands isn't an extension Tinycast can run.
         check("rejects a manifest with no commands", ExtensionManifest(json: ["name": "x"]) == nil)
         check(
@@ -274,6 +407,15 @@ struct ExtensionTests {
                     "name": "w", "platforms": ["Windows"],
                     "commands": [["name": "c", "title": "C"]]
                 ])?.supportsMacOS == false)
+        let commands = [["name": "c", "title": "C"]]
+        check(
+            "the store lists an organisation's extension under its owner",
+            ExtensionManifest(json: ["name": "o", "author": "me", "owner": "org", "commands": commands])?
+                .storeHandle == "org")
+        check(
+            "and anyone else's under its author",
+            ExtensionManifest(json: ["name": "a", "author": "me", "commands": commands])?.storeHandle
+                == "me")
 
         // Launcher round-trip: an entry id must decode back to the same command.
         let reference = ExtensionCommandRef(extensionName: "@scope/demo", commandName: "search")
@@ -351,8 +493,117 @@ struct ExtensionTests {
         check(
             "shortcut renders as keycaps", actions.first?.shortcutCaps == ["⌘", "⇧", "G"],
             String(describing: actions.first?.shortcutCaps))
-        check("section title carried", actions.last?.section == "More")
+        check("loose action starts no section", actions.first?.startsSection == false)
+        check("a section after loose actions starts one", actions.last?.startsSection == true)
         check("destructive style", actions.last?.isDestructive == true)
+        sectionBoundaryChecks()
+        submenuPrimaryActionChecks()
+    }
+
+    /// Boundaries follow section nodes: Raycast authors mostly leave sections untitled.
+    static func sectionBoundaryChecks() {
+        func action(_ id: Int) -> String {
+            #"{"id":\#(id),"type":"Action","props":{"title":"A\#(id)"},"children":[]}"#
+        }
+        let json = """
+            {"id":1,"type":"ActionPanel","props":{},"children":[
+              {"id":2,"type":"ActionPanel.Section","props":{},"children":[
+                \(action(3)),
+                {"id":4,"type":"ActionPanel.Submenu","props":{"title":"Share"},"children":[\(action(5))]},
+                \(action(6))]},
+              {"id":7,"type":"ActionPanel.Section","props":{},"children":[]},
+              {"id":8,"type":"ActionPanel.Section","props":{},"children":[\(action(9))]},
+              {"id":10,"type":"ActionPanel.Section","props":{"title":"Same"},"children":[\(action(11))]},
+              {"id":12,"type":"ActionPanel.Section","props":{"title":"Same"},"children":[\(action(13))]},
+              \(action(14))]}
+            """
+        guard let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+            let panel = RenderNode(json: object)
+        else {
+            check("section fixture decodes", false)
+            return
+        }
+        let starts = ExtensionScreen.actions(in: panel).map(\.startsSection)
+        check(
+            "separators follow section nodes, not titles",
+            starts == [false, false, false, true, true, true, true], "\(starts)")
+    }
+
+    /// A submenu reached first must not become ⏎'s target as though it were its own child. #783.
+    static func submenuPrimaryActionChecks() {
+        func action(_ id: Int) -> String {
+            #"{"id":\#(id),"type":"Action","props":{"title":"A\#(id)"},"children":[]}"#
+        }
+        let json = """
+            {"id":1,"type":"ActionPanel","props":{},"children":[
+              {"id":2,"type":"ActionPanel.Submenu","props":{"title":"Open…"},"children":[
+                \(action(3)),
+                \(action(4))]},
+              {"id":5,"type":"ActionPanel.Section","props":{"title":"Other"},"children":[\(action(6))]}]}
+            """
+        guard let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+            let panel = RenderNode(json: object)
+        else {
+            check("submenu fixture decodes", false)
+            return
+        }
+        let actions = ExtensionScreen.actions(in: panel)
+        check(
+            "an action reached through a submenu carries its title",
+            actions.first?.enclosingSubmenuTitle == "Open…",
+            String(describing: actions.first?.enclosingSubmenuTitle))
+        check(
+            "the submenu's own leaves still flatten into the palette",
+            actions.map(\.title) == ["A3", "A4", "A6"], "\(actions.map(\.title))")
+        check(
+            "an action outside any submenu carries no submenu title",
+            actions.last?.enclosingSubmenuTitle == nil,
+            String(describing: actions.last?.enclosingSubmenuTitle))
+
+        // A loose action reached without ever entering a submenu is unaffected: primary fires it.
+        let looseFirstJSON = """
+            {"id":1,"type":"ActionPanel","props":{},"children":[
+              \(action(2)),
+              {"id":3,"type":"ActionPanel.Submenu","props":{"title":"Share"},"children":[\(action(4))]}]}
+            """
+        guard
+            let looseObject = try? JSONSerialization.jsonObject(with: Data(looseFirstJSON.utf8))
+                as? [String: Any],
+            let loosePanel = RenderNode(json: looseObject)
+        else {
+            check("loose-first fixture decodes", false)
+            return
+        }
+        let looseActions = ExtensionScreen.actions(in: loosePanel)
+        check(
+            "a loose action ahead of any submenu keeps the primary a direct action",
+            looseActions.first?.enclosingSubmenuTitle == nil,
+            String(describing: looseActions.first?.enclosingSubmenuTitle))
+
+        // Mirrors ExtensionCommandScreen.primaryActionTitle/activate(at:), unreachable from here.
+        func primaryActionOutcome(_ actions: [ExtensionAction]) -> (title: String, opensPanel: Bool) {
+            guard let primary = actions.first else { return ("Run", false) }
+            return (
+                primary.enclosingSubmenuTitle ?? primary.title,
+                primary.enclosingSubmenuTitle != nil
+            )
+        }
+
+        let submenuOutcome = primaryActionOutcome(actions)
+        check(
+            "a submenu-backed primary's title is the submenu's, not the leaf's",
+            submenuOutcome.title == "Open…", submenuOutcome.title)
+        check(
+            "⏎ on a submenu-backed primary opens the actions panel instead of dispatching",
+            submenuOutcome.opensPanel, "\(submenuOutcome)")
+
+        let looseOutcome = primaryActionOutcome(looseActions)
+        check(
+            "a loose primary's title is its own leaf's",
+            looseOutcome.title == "A2", looseOutcome.title)
+        check(
+            "⏎ on a loose primary dispatches directly, since it never opens the panel",
+            !looseOutcome.opensPanel, "\(looseOutcome)")
     }
 
     static func screenChecks() {
@@ -364,20 +615,27 @@ struct ExtensionTests {
         }
 
         let listJSON = """
-            {"id":2,"type":"List","props":{"filtering":true,"searchBarPlaceholder":"Find…"},"children":[
+            {"id":2,"type":"List","props":{"filtering":true,"selectedItemId":"banana","searchBarPlaceholder":"Find…",
+              "onSelectionChange":{"$fn":"2:onSelectionChange"}},"children":[
               {"id":3,"type":"List.Section","props":{"title":"Alpha","subtitle":"two"},"children":[
-                {"id":4,"type":"List.Item","props":{"title":"Apple"},"children":[]},
-                {"id":5,"type":"List.Item","props":{"title":"Banana"},"children":[]}]},
-              {"id":6,"type":"List.Item","props":{"title":"Cherry","keywords":["red"]},"children":[]}]}
+                {"id":4,"type":"List.Item","props":{"id":"apple","title":"Apple"},"children":[]},
+                {"id":5,"type":"List.Item","props":{"id":"banana","title":"Banana"},"children":[]}]},
+              {"id":6,"type":"List.Item","props":{"id":"cherry","title":"Cherry","keywords":["red"]},"children":[]}]}
             """
         let list = ExtensionScreen(tree: tree(listJSON), query: "")
         check("kind is list", list.kind == .list)
         check("placeholder", list.searchPlaceholder == "Find…")
         check("filters locally", list.filtersLocally)
+        check("selected item id", list.selectedItemID == "banana")
+        check("selected item index", list.selectedItemIndex == 1)
         check(
             "items flattened in order",
             list.items.map { $0.node.string("title") } == ["Apple", "Banana", "Cherry"])
         check("rows interleave the section header", list.rows.count == 4, "\(list.rows.count)")
+        check(
+            "selection callback resolves the item id",
+            list.selectionChange(at: 1)
+                == .init(handler: "2:onSelectionChange", itemID: "banana"))
         if case .header(let title, let subtitle, _) = list.rows.first {
             check("header title", title == "Alpha")
             check("header subtitle", subtitle == "two")
@@ -392,6 +650,15 @@ struct ExtensionTests {
             filtered.items.map { $0.node.string("title") } == ["Banana"],
             String(describing: filtered.items.map { $0.node.string("title") }))
         check("empty section drops its header", filtered.rows.count == 2, "\(filtered.rows.count)")
+        check(
+            "filtered selection resolves after filtering",
+            filtered.selectionChange(at: 0)
+                == .init(handler: "2:onSelectionChange", itemID: "banana"))
+        check("filtered selected item index", filtered.selectedItemIndex == 0)
+        check(
+            "an empty selection reports null",
+            filtered.selectionChange(at: 1)
+                == .init(handler: "2:onSelectionChange", itemID: nil))
         let byKeyword = ExtensionScreen(tree: tree(listJSON), query: "red")
         check("keyword match", byKeyword.items.map { $0.node.string("title") } == ["Cherry"])
 
@@ -405,6 +672,20 @@ struct ExtensionTests {
         check("onSearchTextChange disables local filtering", controlled.filtersLocally == false)
         check("controlled rows survive a non-matching query", controlled.items.count == 1)
         check("search handler exposed", controlled.searchTextHandler == "2:onSearchTextChange")
+
+        let keepOrder = ExtensionScreen(
+            tree: tree(
+                """
+                {"id":2,"type":"List","props":{"filtering":{"keepSectionOrder":true},
+                  "onSearchTextChange":{"$fn":"2:onSearchTextChange"}},"children":[
+                  {"id":3,"type":"List.Item","props":{"title":"Apple"},"children":[]},
+                  {"id":4,"type":"List.Item","props":{"title":"Banana"},"children":[]}]}
+                """), query: "ban")
+        check("an object `filtering` still filters", keepOrder.filtersLocally)
+        check(
+            "and keeps only the match",
+            keepOrder.items.map { $0.node.string("title") } == ["Banana"],
+            keepOrder.items.map { $0.node.string("title") ?? "" }.joined(separator: ","))
 
         let grid = ExtensionScreen(
             tree: tree(
@@ -454,13 +735,29 @@ struct ExtensionTests {
                 """), query: "")
         check("kind is form", form.kind == .form)
         check("fields collected", form.fields.count == 2)
-        check("form has no selectable rows", form.items.isEmpty)
-
+        check("only focusable fields are rows", form.items.count == 1)
+        check("the row is the field, not the separator", form.items.first?.node.id == 3)
+        check("a separator has no focus index", form.focusItem(for: form.fields[1]) == nil)
+        check(
+            "a text area keeps the vertical keys",
+            ExtensionFormField(type: "Form.TextArea").ownsVerticalKeys)
         let detail = ExtensionScreen(
-            // Doubled delimiters: the heading contains `"#`, which closes a single-# string.
-            tree: tree(##"{"id":2,"type":"Detail","props":{"markdown":"# Hi"},"children":[]}"##),
+            tree: tree(
+                """
+                {"id":2,"type":"Detail","props":{"markdown":"# Hi","actions":
+                  {"id":7,"type":"ActionPanel","props":{},"children":[
+                    {"id":8,"type":"Action","props":{"title":"Open",
+                      "onAction":{"$fn":"8:onAction"}},"children":[]}]}},"children":[]}
+                """),
             query: "")
         check("kind is detail", detail.kind == .detail)
+        check("rowless detail has no rows", detail.rows.isEmpty)
+        check(
+            "rowless detail falls back to screen actions",
+            detail.actionPanel(forItemAt: 0)?.id == 7)
+        let detailActions = ExtensionScreen.actions(in: detail.actionPanel(forItemAt: 0))
+        check("rowless detail keeps action title", detailActions.first?.title == "Open")
+        check("rowless detail keeps action handler", detailActions.first?.handler == "8:onAction")
 
         let unsupported = ExtensionScreen(
             tree: tree(#"{"id":2,"type":"MenuBarExtra","props":{},"children":[]}"#), query: "")
@@ -507,6 +804,10 @@ struct ExtensionTests {
             "a themed tint picks the dark side",
             icon(#"{"source":"circle-16","tintColor":{"light":"raycast-red","dark":"raycast-blue"}}"#)
                 .tint == .blue)
+        // A colour picker states its swatch in Oklch, which read as no tint at all before.
+        check(
+            "an oklch tint too",
+            icon(#"{"source":"circle-16","tintColor":"oklch(62.8% 0.2577 29.23)"}"#).tint != nil)
 
         let bare = icon(#""checkmark-circle-16""#)
         check("a bare icon still resolves", bare.source == .symbol("checkmark.circle"))
@@ -609,6 +910,81 @@ struct ExtensionTests {
             ExtensionOAuthSession.handleCallbackURL(strayURL) == .expired)
     }
 
+    static func deepLinkChecks() {
+        let canonical = ExtensionDeepLink.parse(
+            url: URL(string: "raycast://extensions/linear/linear/create-issue")!)
+        check(
+            "deeplink parses owner, extension and command",
+            canonical?.ownerOrAuthor == "linear" && canonical?.extensionName == "linear"
+                && canonical?.commandName == "create-issue",
+            String(describing: canonical))
+        check(
+            "deeplink prefers the scoped manifest name",
+            canonical?.extensionCandidates == ["linear/linear", "linear"],
+            String(describing: canonical?.extensionCandidates))
+
+        let tiny = ExtensionDeepLink.parse(
+            url: URL(string: "tinycast://extensions/linear/linear/create-issue")!)
+        check("deeplink mirrors raycast:// as tinycast://", tiny == canonical)
+
+        let bare = ExtensionDeepLink.parse(url: URL(string: "raycast://extensions/demo/search")!)
+        check(
+            "deeplink without an owner parses",
+            bare?.ownerOrAuthor == nil && bare?.extensionName == "demo"
+                && bare?.commandName == "search")
+
+        let args = ExtensionDeepLink.parse(
+            url: URL(
+                string:
+                    "raycast://extensions/linear/linear/create-issue?arguments=%7B%22title%22%3A%22Triage%22%7D"
+            )!)
+        check(
+            "deeplink decodes arguments JSON",
+            args?.arguments == ["title": "Triage"], String(describing: args?.arguments))
+
+        let coerced = ExtensionDeepLink.parseArguments(#"{"q":"","n":3,"flag":true}"#)
+        check(
+            "deeplink coerces non-string arguments",
+            coerced == ["q": "", "n": "3", "flag": "true"], String(describing: coerced))
+        check(
+            "deeplink treats malformed arguments as none",
+            ExtensionDeepLink.parseArguments("not-json") == [:])
+
+        let full = ExtensionDeepLink.parse(
+            url: URL(
+                string: "raycast://extensions/demo/search?fallbackText=hello&launchType=background"
+            )!)
+        check(
+            "deeplink reads fallback text and background launch",
+            full?.fallbackText == "hello" && full?.launchType == .background)
+
+        let legacy = ExtensionDeepLink.parse(
+            url: URL(string: "com.raycast:/extensions/demo/search")!)
+        check(
+            "deeplink reads the com.raycast path form",
+            legacy?.extensionName == "demo" && legacy?.commandName == "search")
+
+        check(
+            "deeplink rejects a non-extensions link",
+            ExtensionDeepLink.parse(url: URL(string: "raycast://confetti")!) == nil)
+        check(
+            "deeplink rejects an OAuth callback",
+            ExtensionDeepLink.parse(url: URL(string: "raycast://oauth?code=abc")!) == nil)
+        check(
+            "deeplink rejects other schemes",
+            ExtensionDeepLink.parse(url: URL(string: "https://example.com/x")!) == nil)
+
+        check(
+            "deeplink matches a scoped install by slug",
+            bare?.matches(manifestName: "owner/demo") == true)
+        check(
+            "deeplink matches a short install from a scoped link",
+            canonical?.matches(manifestName: "linear") == true)
+        check(
+            "deeplink rejects another extension",
+            canonical?.matches(manifestName: "other/other") == false)
+    }
+
     // MARK: - End-to-end through JavaScriptCore
 
     @MainActor
@@ -636,37 +1012,82 @@ struct ExtensionTests {
             const { List, ActionPanel, Action, Icon, showToast, Toast } = require("@raycast/api");
             const React = require("react");
             const path = require("node:path");
+            const os = require("node:os");
             const crypto = require("node:crypto");
-            const { Buffer } = require("node:buffer");
-            const field = Buffer.from('A CSV field longer than twenty bytes: café');
-            const grown = Buffer.allocUnsafe(field.length * 2);
-            if (Buffer.compare(Buffer.from('"'), Buffer.from('"')) !== 0
-                || Buffer.compare(Buffer.from([255]), new Uint8Array([0])) !== 1
-                || Buffer.compare(Buffer.from([1]), Buffer.from([1, 0])) !== -1
-                || field.copy(grown) !== field.length
-                || Buffer.compare(field, grown.slice(0, field.length)) !== 0) {
-              throw new Error("Buffer comparison or CSV field growth failed");
-            }
+            const { fileURLToPath, pathToFileURL } = require("node:url");
+            const util = require("node:util");
             const h = React.createElement;
             module.exports.default = function Command() {
               const [count, setCount] = React.useState(0);
+              const [derived, setDerived] = React.useState("pending");
               React.useEffect(() => {
                 const timer = setTimeout(() => setCount(1), 20);
+                crypto.pbkdf2("foobar", "foobarbazzybaz", 1e5, 64, "sha512", (error, key) =>
+                  setDerived(error ? error.message : key.toString("hex").slice(0, 16)));
                 showToast({ style: Toast.Style.Success, title: "hello" });
                 return () => clearTimeout(timer);
               }, []);
               const digest = crypto.createHash("sha256").update("abc").digest("hex").slice(0, 8);
-              // AbortSignal's statics too: `AbortSignal.timeout` used to be "not a function".
+              const cpu = os.cpus()[0];
+              const cpuTimes = Object.values(cpu.times).every(Number.isFinite) ? "cpu=ok" : "cpu=bad";
+              // AbortSignal's statics, the brand node-fetch checks, and url.parse's legacy `path`.
               const abortable = [
                 typeof AbortSignal.timeout, typeof AbortSignal.abort, typeof AbortSignal.any,
                 String(AbortSignal.timeout(5e3).aborted), AbortSignal.abort().reason.name,
+                Object.getPrototypeOf(AbortSignal.abort()).constructor.name,
+                Object.prototype.toString.call(AbortSignal.abort()),
+                require("node:url").parse("https://a.test/ajax.php?f=list").path,
+              ].join(",");
+              const errorCode = (callback) => {
+                try { callback(); return "none"; } catch (error) { return error.code; }
+              };
+              const filePaths = [
+                fileURLToPath("file:///Applications/Tinycast%20Beta.app"),
+                fileURLToPath(pathToFileURL("/tmp/a#b.png")),
+                pathToFileURL("/tmp/My Image.png").href,
+                errorCode(() => fileURLToPath("file:///tmp/a%2Fb")),
+                errorCode(() => fileURLToPath("file://example.com/tmp/a")),
+                errorCode(() => fileURLToPath("https://example.com/a")),
+              ].join("\\n");
+              // execa and undici read all of these at module scope; each was once a TypeError.
+              const debug = util.debuglog("execa");
+              const utilShim = [
+                typeof debug, String(debug.enabled), String(debug("ignored")),
+                util.stripVTControlCharacters("\\u001B[31mred\\u001B[39m"),
+                util.formatWithOptions({ colors: true }, "%s=%d", "n", 2),
+                String(util.inspect.custom === Symbol.for("nodejs.util.inspect.custom")),
+                typeof util.aborted(AbortSignal.abort()).then,
+              ].join(",");
+              // Bitwarden derives its session hash and caches the vault through exactly these calls.
+              const encrypter = crypto.createCipheriv("aes-256-cbc", "k".repeat(32), "i".repeat(16));
+              const encrypted = Buffer.concat([encrypter.update("hello tinycast"), encrypter.final()]);
+              const decrypter = crypto.createDecipheriv("aes-256-cbc", "k".repeat(32), Buffer.from("i".repeat(16)));
+              const ecb = crypto.createCipheriv("aes-128-ecb", Buffer.alloc(16, 1), null).setAutoPadding(false);
+              const cipherShim = [
+                crypto.pbkdf2Sync("password", "salt", 1000, 16, "sha512").toString("hex"),
+                crypto.pbkdf2Sync("", "", 1, 8, "SHA-256").toString("hex"),
+                crypto.createCipheriv("aes-256-cbc", "k".repeat(32), "i".repeat(16)).final("hex"),
+                encrypted.toString("hex"),
+                decrypter.update(encrypted.toString("hex"), "hex", "utf8") + decrypter.final("utf8"),
+                ecb.update(Buffer.alloc(16, 2)).toString("hex") + ecb.final("hex"),
+                errorCode(() => {
+                  const wrong = crypto.createDecipheriv("aes-256-cbc", "k".repeat(32), "i".repeat(16));
+                  wrong.update(Buffer.alloc(16));
+                  wrong.final();
+                }),
+                errorCode(() => crypto.createCipheriv("aes-256-cbc", "short", "i".repeat(16))),
+                errorCode(() => crypto.pbkdf2Sync("p", "s", 1, 8, "nope")),
+                derived,
               ].join(",");
               return h(List, { navigationTitle: "Synthetic", isLoading: false },
                 h(List.Item, {
                   title: "count=" + count,
                   subtitle: path.join("/a/b", "../c"),
                   icon: Icon.Circle,
-                  accessories: [{ text: digest }, { text: abortable }],
+                  accessories: [
+                    { text: digest }, { text: abortable }, { text: filePaths },
+                    { text: cpuTimes }, { text: cipherShim }, { text: utilShim },
+                  ],
                   actions: h(ActionPanel, null,
                     h(Action, { title: "Bump", onAction: () => setCount((v) => v + 10) }))
                 }));
@@ -698,11 +1119,41 @@ struct ExtensionTests {
             ExtensionAccessoriesView_labelForTest(screen.items.first?.node.array("accessories").first)
                 == "ba7816bf",
             String(describing: screen.items.first?.node.array("accessories").first))
+        check(
+            "os.cpus crosses the synchronous host bridge",
+            ExtensionAccessoriesView_labelForTest(
+                screen.items.first?.node.array("accessories").dropFirst(3).first) == "cpu=ok",
+            String(describing: screen.items.first?.node.array("accessories")))
         check("toast reached the host", host.toasts == ["hello"], host.toasts.joined(separator: ","))
         check(
-            "AbortSignal carries its statics",
+            "AbortSignal survives node-fetch's brand checks, and url.parse keeps its path",
+            ExtensionAccessoriesView_labelForTest(
+                screen.items.first?.node.array("accessories").dropFirst().first)
+                == "function,function,function,false,AbortError,AbortSignal,"
+                + "[object AbortSignal],/ajax.php?f=list",
+            String(describing: screen.items.first?.node.array("accessories").dropFirst().first))
+        check(
+            "fileURLToPath decodes a path and rejects an unusable URL",
+            ExtensionAccessoriesView_labelForTest(
+                screen.items.first?.node.array("accessories").dropFirst(2).first)
+                == "/Applications/Tinycast Beta.app\n/tmp/a#b.png\n"
+                + "file:///tmp/My%20Image.png\n"
+                + "ERR_INVALID_FILE_URL_PATH\nERR_INVALID_FILE_URL_HOST\n"
+                + "ERR_INVALID_URL_SCHEME",
+            String(describing: screen.items.first?.node.array("accessories").dropFirst(2).first))
+        check(
+            "crypto shim derives PBKDF2 keys and round-trips AES like Node",
+            ExtensionAccessoriesView_labelForTest(
+                screen.items.first?.node.array("accessories").dropFirst(4).first)
+                == "afe6c5530785b6cc6b1c6453384731bd,f7ce0b653d2d72a4,5d11c49af18b4b3e482508362bd2c857,"
+                + "eb7b227687302ff167fef6a04d9f99f3,"
+                + "hello tinycast,17d614f379a9359077e95577fd31c20a,ERR_OSSL_BAD_DECRYPT,"
+                + "ERR_CRYPTO_INVALID_KEYLEN,ERR_CRYPTO_INVALID_DIGEST,6cba6dd1d44f53a3",
+            String(describing: screen.items.first?.node.array("accessories").dropFirst(4).first))
+        check(
+            "util shim answers debuglog, stripVTControlCharacters, aborted and inspect.custom",
             ExtensionAccessoriesView_labelForTest(screen.items.first?.node.array("accessories").last)
-                == "function,function,function,false,AbortError",
+                == "function,false,undefined,red,n=2,true,function",
             String(describing: screen.items.first?.node.array("accessories").last))
 
         // Dispatch the row's action and confirm the re-render.
@@ -879,7 +1330,288 @@ struct ExtensionTests {
         await failing.stop(session: "s3")
 
         await swiftHelperChecks()
+        await processKillChecks()
         zlibChecks()
+    }
+
+    /// Drives a dropdown-filtered command from its empty first render to visible results.
+    @MainActor
+    static func searchAccessoryRuntimeChecks() async {
+        let (runtime, _, recorder) = makeRuntime()
+        do {
+            try await runtime.boot(
+                config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+        } catch {
+            check("search accessory runtime boots", false, error.localizedDescription)
+            return
+        }
+
+        let command = """
+            "use strict";
+            const { List } = require("@raycast/api");
+            const React = require("react");
+            const h = React.createElement;
+            module.exports.default = function Command() {
+              const [type, setType] = React.useState(null);
+              const accessory = h(List.Dropdown, {
+                defaultValue: "all",
+                onChange: setType,
+              },
+                h(List.Dropdown.Item, { title: "All Types", value: "all" }),
+                h(List.Dropdown.Item, { title: "Folders", value: "folders" })
+              );
+              return h(List, { searchBarAccessory: accessory },
+                type ? h(List.Item, { title: "filter=" + type }) : null
+              );
+            };
+            """
+        await runtime.start(
+            session: "sAccessory", code: command,
+            file: URL(fileURLWithPath: "/tmp/search-accessory.js"), mode: .view,
+            context: launchContext())
+        await settle()
+
+        guard let firstTree = recorder.trees.last else {
+            check("dropdown-filtered command renders", false)
+            runtime.shutdown()
+            return
+        }
+        let firstScreen = ExtensionScreen(tree: firstTree, query: "")
+        check("dropdown-filtered command starts empty", firstScreen.items.isEmpty)
+        guard
+            let accessory = ExtensionSearchAccessory(
+                node: firstTree.activeRoot?.node("searchBarAccessory")),
+            let initialValue = accessory.initialValue(stored: nil),
+            let handler = accessory.onChange
+        else {
+            check("live dropdown exposes an initial dispatch", false)
+            runtime.shutdown()
+            return
+        }
+        check("live dropdown exposes an initial dispatch", initialValue == "all")
+        check("an uncontrolled dropdown leaves the value to Swift", accessory.controlledValue == nil)
+
+        await runtime.dispatch(
+            session: "sAccessory", handler: handler,
+            payload: ExtensionRuntime.jsonString(from: [initialValue]))
+        await settle()
+        let seededScreen = recorder.trees.last.map { ExtensionScreen(tree: $0, query: "") }
+        check(
+            "initial dropdown dispatch reveals filtered rows",
+            seededScreen?.items.first?.node.string("title") == "filter=all",
+            seededScreen?.items.first?.node.string("title") ?? "no row")
+
+        let renderCount = recorder.trees.count
+        await settle(50)
+        check(
+            "a seeded dropdown settles rather than re-rendering",
+            recorder.trees.count == renderCount,
+            "\(renderCount) → \(recorder.trees.count)")
+
+        // The node id is what the held pick is keyed by, so a re-render must not renumber it.
+        check(
+            "the dropdown keeps its node id across renders",
+            recorder.trees.last.flatMap {
+                ExtensionSearchAccessory(node: $0.activeRoot?.node("searchBarAccessory"))?.nodeID
+            } == accessory.nodeID)
+        await runtime.stop(session: "sAccessory")
+    }
+
+    @MainActor
+    static func nodeContractChecks() async {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tinycast-archive-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (runtime, host, recorder) = makeRuntime()
+        try? await runtime.boot(config: .current(supportDirectory: directory))
+        let command = """
+            const fs = require("fs"), zlib = require("zlib"), assert = require("assert");
+            const call = (name, ...args) => new Promise((resolve, reject) =>
+              fs[name](...args, (error, ...values) => error ? reject(error) : resolve(values)));
+            module.exports.default = async () => {
+              const file = "\(directory.path)/output", moved = file + ".moved";
+              const gzip = Buffer.from("H4sIAAAAAAAC/ytJLGL4X5BYmZOfmAIANNN0xgwAAAA=", "base64");
+              const expected = Buffer.from("74617200ff7061796c6f6164", "hex");
+              const unzip = new zlib.Unzip();
+              const concat = Buffer.concat;
+              let decoded;
+              try {
+                Buffer.concat = (chunks) => chunks;
+                assert.equal(unzip._processChunk(gzip.subarray(0, 10), 0).length, 0);
+                decoded = unzip._processChunk(gzip.subarray(10), 4);
+              } finally { Buffer.concat = concat; unzip.close(); }
+              assert(decoded.equals(expected));
+              const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL;
+              const [fd] = await call("open", file, flags, 0o600);
+              const [written, same] = await call("write", fd, decoded, 0, decoded.length, null);
+              assert.equal(written, expected.length); assert(same === decoded);
+              await call("futimes", fd, new Date(1000000), new Date(2000000));
+              await call("close", fd);
+              const code = (fn) => { try { fn(); return "none"; } catch (error) { return error.code; } };
+              assert.equal(code(() => fs.openSync(file, "wx")), "EEXIST");
+              const [reader] = await call("open", file, "r");
+              fs.renameSync(file, moved);
+              const buffer = Buffer.alloc(expected.length + 2, 42);
+              const [count, sameBuffer] = await call("read", reader, buffer, 1, expected.length, 0);
+              assert.equal(count, expected.length); assert(sameBuffer === buffer);
+              assert(buffer.subarray(1, -1).equals(expected)); assert.equal(buffer[0], 42);
+              assert.equal(fs.readSync(reader, buffer, 0, 3, null), 3);
+              assert.equal(buffer.subarray(0, 3).toString(), "tar");
+              assert.equal(fs.readSync(reader, buffer, 0, expected.length, null), expected.length - 3);
+              assert.equal(fs.readSync(reader, buffer, 0, 1, null), 0);
+              fs.closeSync(reader);
+              assert.equal(code(() => fs.readSync(reader, buffer, 0, 1, null)), "EBADF");
+              assert.equal(code(() => fs.openSync(moved + "/nested", "w")), "ENOTDIR");
+              const writer = fs.openSync(moved, "r+");
+              fs.writeSync(writer, Buffer.from("X"), 0, 1, 2);
+              fs.writeSync(writer, Buffer.from("Y"), 0, 1, null);
+              fs.closeSync(writer);
+              assert.equal(fs.readFileSync(moved).subarray(0, 3).toString(), "YaX");
+              const listing = "\(directory.path)/listing";
+              fs.mkdirSync(listing + "/folder", { recursive: true });
+              fs.writeFileSync(listing + "/entry", "");
+              const handle = fs.opendirSync(listing);
+              assert.equal(handle.path, listing);
+              const first = handle.readSync(), second = handle.readSync();
+              assert.equal(handle.readSync(), null);
+              handle.closeSync();
+              assert.equal(code(() => handle.readSync()), "ERR_DIR_CLOSED");
+              const byName = Object.fromEntries([first, second].map((entry) => [entry.name, entry]));
+              assert(byName.entry.isFile() && byName.folder.isDirectory());
+              assert.equal(byName.entry.parentPath, listing);
+              const [callbackDir] = await call("opendir", listing);
+              assert.equal((await callbackDir.read()).constructor, fs.Dirent);
+              await callbackDir.close();
+              const iterated = await Array.fromAsync(await fs.promises.opendir(listing));
+              assert.equal(iterated.map((entry) => entry.name).sort().join(), "entry,folder");
+              const zlibDecoded = new zlib.Unzip()._processChunk(
+                Buffer.from("eJwrSSxi+F+QWJmTn5gCACHpBTE=", "base64"), 4);
+              assert(zlibDecoded.equals(expected));
+              const invalid = new zlib.Unzip();
+              assert.throws(() => invalid._processChunk(Buffer.from("invalid"), 4));
+              invalid.close();
+              // axios picks its Node http adapter by this tag, and inherits from streams ES5-style.
+              assert.equal(Object.prototype.toString.call(process), "[object process]");
+              const { Readable, Writable } = require("stream");
+              // node-fetch sends a body through `Readable.from`, which never splits it into bytes.
+              const body = await Array.fromAsync(Readable.from("hello"));
+              assert.equal(body.length, 1); assert.equal(String(body[0]), "hello");
+              function Legacy() { Writable.call(this, { highWaterMark: 7 }); }
+              Legacy.prototype = Object.create(Writable.prototype);
+              Legacy.prototype._write = function (chunk, encoding, callback) { this.seen = chunk; callback(); };
+              const legacy = new Legacy();
+              assert(legacy instanceof Writable);
+              assert.equal(legacy.writableLength, 0);
+              legacy.write(Buffer.from("hi"));
+              assert.equal(String(legacy.seen), "hi");
+              await require("@raycast/api").showHUD("archive IO passed");
+            };
+            """
+        await runtime.start(
+            session: "archive", code: command, file: directory.appendingPathComponent("test.js"),
+            mode: .noView, context: launchContext(mode: .noView))
+        await settle()
+        check(
+            "node file, zlib and stream contracts", host.huds == ["archive IO passed"],
+            recorder.failures.joined(separator: "|"))
+        await runtime.stop(session: "archive")
+        runtime.shutdown()
+    }
+
+    /// sql.js loads through `WebAssembly.instantiate`, whose promise never settled on the JS queue.
+    @MainActor
+    static func webAssemblyChecks() async {
+        let (runtime, host, recorder) = makeRuntime()
+        try? await runtime.boot(
+            config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+        let command = """
+            module.exports.default = async () => {
+              const add = "AGFzbQEAAAABBwFgAn9/AX8DAgEABwcBA2FkZAAACgkBBwAgACABags=";
+              const bytes = Buffer.from(add, "base64");
+              const { module, instance } = await WebAssembly.instantiate(bytes);
+              const compiled = await WebAssembly.instantiate(await WebAssembly.compile(bytes));
+              const invalid = await WebAssembly.instantiate(new Uint8Array([0, 1, 2])).then(
+                () => "resolved", (error) => error instanceof WebAssembly.CompileError);
+              const sum = instance.exports.add(2, 3) + compiled.exports.add(4, 5);
+              const isModule = module instanceof WebAssembly.Module;
+              await require("@raycast/api").showHUD(`${isModule} ${sum} ${invalid}`);
+            };
+            """
+        await runtime.start(
+            session: "wasm", code: command, file: URL(fileURLWithPath: "/tmp/wasm.js"),
+            mode: .noView, context: launchContext(mode: .noView))
+        await settle()
+        check(
+            "WebAssembly promise APIs settle", host.huds == ["true 14 true"],
+            "\(host.huds) \(recorder.failures.joined(separator: "|"))")
+        await runtime.stop(session: "wasm")
+        runtime.shutdown()
+    }
+
+    /// `withAccessToken` hands React an async component, which only renders while the promise it
+    /// suspended on comes back rather than being remade every attempt (#519).
+    @MainActor
+    static func asyncComponentChecks() async {
+        let (runtime, _, recorder) = makeRuntime()
+        do {
+            try await runtime.boot(
+                config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+        } catch {
+            check("async component runtime boots", false, error.localizedDescription)
+            return
+        }
+
+        let command = """
+            "use strict";
+            const { List, ActionPanel, Action } = require("@raycast/api");
+            const React = require("react");
+            const h = React.createElement;
+            function Inner() {
+              const [count, setCount] = React.useState(0);
+              return h(List, null, h(List.Item, {
+                title: "count=" + count,
+                actions: h(ActionPanel, null,
+                  h(Action, { title: "Bump", onAction: () => setCount((v) => v + 1) })),
+              }));
+            }
+            async function Wrapped(props) { return await Inner(props); }
+            module.exports.default = function Command(props) { return h(Wrapped, props); };
+            """
+        await runtime.start(
+            session: "sAsync", code: command, file: URL(fileURLWithPath: "/tmp/async.js"),
+            mode: .view, context: launchContext())
+        await settle()
+
+        check(
+            "an async command renders", recorder.failures.isEmpty,
+            recorder.failures.joined(separator: "\n"))
+        guard let tree = recorder.trees.last else {
+            check("an async command reaches the screen", false)
+            runtime.shutdown()
+            return
+        }
+        var screen = ExtensionScreen(tree: tree, query: "")
+        check(
+            "an async command reaches the screen",
+            screen.items.first?.node.string("title") == "count=0",
+            screen.items.first?.node.string("title") ?? "nil")
+
+        let actions = ExtensionScreen.actions(in: screen.actionPanel(forItemAt: 0))
+        if let handler = actions.first?.handler {
+            await runtime.dispatch(
+                session: "sAsync", handler: handler,
+                payload: ExtensionRuntime.jsonString(from: []))
+            await settle()
+            screen = ExtensionScreen(tree: recorder.trees.last!, query: "")
+            check(
+                "state inside an async command still updates",
+                screen.items.first?.node.string("title") == "count=1",
+                screen.items.first?.node.string("title") ?? "nil")
+        } else {
+            check("state inside an async command still updates", false, "no dispatchable action")
+        }
+        await runtime.stop(session: "sAsync")
     }
 
     /// Raycast's `swift:` wrapper chmods its bundled helper before spawning it: store zips ship it 644.
@@ -928,6 +1660,52 @@ struct ExtensionTests {
         await runtime.stop(session: "sSwift")
     }
 
+    /// Timers pauses by storing `exec`'s pid and later `process.kill`ing the shell before it rings.
+    @MainActor
+    static func processKillChecks() async {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tinycast-rang-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
+
+        let (runtime, _, recorder) = makeRuntime()
+        try? await runtime.boot(
+            config: .current(supportDirectory: FileManager.default.temporaryDirectory))
+        let command = """
+            "use strict";
+            const { Detail } = require("@raycast/api");
+            const React = require("react");
+            const { exec } = require("child_process");
+            const process = require("process");
+            const code = (run) => { try { run(); return "ok"; } catch (error) { return error.code; } };
+            module.exports.default = function Command() {
+              const [state, setState] = React.useState("pending");
+              React.useEffect(() => {
+                const child = exec("sleep 1 >/dev/null 2>&1; touch '\(marker.path)'", (error) => {
+                  setState([live, error ? "failed" : "passed", child.kill(), code(() => process.kill(0)),
+                    code(() => process.kill(2147483647, 0)), code(() => process.kill(child.pid, "SIGNOPE"))
+                  ].join(","));
+                });
+                const live = child.pid > 0 && process.kill(child.pid, 0) && process.kill(child.pid);
+              }, []);
+              return React.createElement(Detail, { markdown: state });
+            };
+            """
+        await runtime.start(
+            session: "sKill", code: command, file: URL(fileURLWithPath: "/tmp/process-kill.js"),
+            mode: .view, context: launchContext())
+        await settle(1500)
+
+        check(
+            "a killed exec child never runs the rest of its script",
+            !FileManager.default.fileExists(atPath: marker.path))
+        check(
+            "exec returns a live pid and process.kill guards Tinycast itself",
+            recorder.trees.last?.activeRoot?.string("markdown")
+                == "true,failed,false,EPERM,ESRCH,ERR_UNKNOWN_SIGNAL",
+            recorder.trees.last?.activeRoot?.string("markdown") ?? "no tree")
+        await runtime.stop(session: "sKill")
+    }
+
     /// `zlib` is the one node shim with no JS-side implementation to lean on.
     static func zlibChecks() {
         let payload = Data(String(repeating: "tinycast extensions ", count: 64).utf8)
@@ -952,13 +1730,18 @@ struct ExtensionTests {
             print("Not an extension: \(directory.path)")
             exit(1)
         }
-        let runnable = manifest.commands.filter { $0.mode.isSupported }
+        let runnable = manifest.commands
         guard
             let target = commandName.flatMap({ name in runnable.first { $0.name == name } })
                 ?? runnable.first
         else {
             print("No runnable command in \(manifest.title)")
             exit(1)
+        }
+        if target.mode == .menuBar, ProcessInfo.processInfo.environment["EXT_TEST_MENU_BAR"] != nil {
+            await runInstalledMenuBar(
+                InstalledExtension(manifest: manifest, directory: directory), command: target)
+            exit(failures == 0 ? 0 : 1)
         }
         let bundle = directory.appendingPathComponent("\(target.name).js")
         guard let code = try? String(contentsOf: bundle, encoding: .utf8) else {

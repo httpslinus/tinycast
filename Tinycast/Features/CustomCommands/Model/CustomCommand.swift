@@ -11,14 +11,21 @@ struct CustomCommandArgument: Codable, Hashable, Sendable {
         self.isOptional = isOptional
     }
 
+    /// Raycast's own cap, and what keeps the inline fields beside the search field on screen.
+    static let limit = 3
+
+    /// The inline field holding `$n`, keyed by position since two arguments may share a name.
+    static func fieldID(at index: Int) -> String { "$\(index + 1)" }
+
     /// A blank name is dropped rather than rejected, so an import can't lose the whole command.
     static func sanitized(_ arguments: [CustomCommandArgument]) -> [CustomCommandArgument] {
-        arguments.compactMap { argument in
+        let cleaned = arguments.compactMap { argument -> CustomCommandArgument? in
             var cleaned = argument
             cleaned.name = argument.name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleaned.name.isEmpty, !cleaned.name.contains("\0") else { return nil }
             return cleaned
         }
+        return Array(cleaned.prefix(limit))
     }
 }
 
@@ -36,7 +43,7 @@ struct CustomCommand: Codable, Hashable, Identifiable, Sendable {
     var loadsShellEnvironment: Bool
     var requiresConfirmation: Bool
     var showsConfirmation: Bool
-    /// Prompted for in order before the run; empty for the commands that take no input.
+    /// Filled in the launcher row's inline fields; empty for the commands that take no input.
     var arguments: [CustomCommandArgument]
     /// Captures what the command prints and opens the output window once it exits.
     var showsOutput: Bool
@@ -68,6 +75,15 @@ struct CustomCommand: Codable, Hashable, Identifiable, Sendable {
     var symbol: String { iconSymbol ?? Self.sfSymbol }
 
     var entryID: String { Self.entryIDPrefix + id.uuidString.lowercased() }
+
+    /// The values in `$n` order, keyed by `fieldID(at:)`; nil while a required one is empty.
+    func positionalValues(from values: [String: String]) -> [String]? {
+        let positional = arguments.indices.map {
+            values[CustomCommandArgument.fieldID(at: $0)] ?? ""
+        }
+        let complete = zip(arguments, positional).allSatisfy { $0.isOptional || !$1.isEmpty }
+        return complete ? positional : nil
+    }
 
     static func id(fromEntryID entryID: String) -> UUID? {
         guard entryID.hasPrefix(entryIDPrefix) else { return nil }
@@ -153,14 +169,27 @@ final class CustomCommandStore {
     // Takes a whole draft, so adding an option doesn't churn every call site.
     @discardableResult
     func add(_ draft: CustomCommand) throws -> CustomCommand {
-        let value = try validated(draft)
+        let value = try validated(draft, against: commands)
         commit(commands + [value])
         return value
     }
 
+    /// One commit for a whole import, and it returns how many of the drafts were new.
+    @discardableResult
+    func add(contentsOf drafts: [CustomCommand]) -> Int {
+        var updated = commands
+        let existing = commands.count
+        for draft in drafts {
+            guard let value = try? validated(draft, against: updated) else { continue }
+            updated.append(value)
+        }
+        commit(updated)
+        return updated.count - existing
+    }
+
     func update(_ draft: CustomCommand) throws {
         guard let index = commands.firstIndex(where: { $0.id == draft.id }) else { return }
-        let value = try validated(draft)
+        let value = try validated(draft, against: commands)
         var updated = commands
         updated[index] = value
         commit(updated)
@@ -192,7 +221,10 @@ final class CustomCommandStore {
         return updated.count
     }
 
-    private func validated(_ draft: CustomCommand) throws -> CustomCommand {
+    /// `existing` is what the name must be unique against: the library, or a batch in progress.
+    private func validated(
+        _ draft: CustomCommand, against existing: [CustomCommand]
+    ) throws -> CustomCommand {
         var value = draft
         value.name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
         value.command = draft.command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -205,7 +237,7 @@ final class CustomCommandStore {
             throw CustomCommandValidationError.invalidCharacter
         }
         guard
-            !commands.contains(where: {
+            !existing.contains(where: {
                 $0.id != value.id
                     && $0.name.compare(value.name, options: .caseInsensitive) == .orderedSame
             })

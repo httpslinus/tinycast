@@ -53,6 +53,18 @@ struct SettingsBackupTest {
             "user ignore patterns ride the settings backup",
             mirrored["fileSearchIgnorePatterns"] == .fileSearchIgnorePatterns)
         check("notes enablement rides the settings backup", mirrored["notesEnabled"] == .notesEnabled)
+        check(
+            "Markdown rendering rides the settings backup",
+            mirrored["notesRendersMarkdown"] == .notesRendersMarkdown)
+        check(
+            "the formatting bar rides the settings backup",
+            mirrored["notesShowsFormattingBar"] == .notesShowsFormattingBar)
+        check(
+            "clipboard enablement rides the settings backup",
+            mirrored["clipboardEnabled"] == .clipboardEnabled)
+        check(
+            "emoji grid density rides the settings backup",
+            mirrored["emojiGridColumns"] == .emojiGridColumns)
 
         // Named one by one: a backup now carries content, so it is far likelier to be sent on.
         for key: AppSettingsKey in [

@@ -5,28 +5,57 @@ import Observation
 @MainActor
 @Observable
 final class QuickActionCoordinator {
+    private struct NoteSelection {
+        let editor: NoteTextView
+        let document: NoteEditorInput
+        let range: NSRange
+        let text: String
+    }
+
+    private enum Target {
+        case external(NSRunningApplication?)
+        case note(NoteSelection)
+    }
+
     private let settings: AppSettings
     private let store: QuickActionSettingsStore
+    private let customActions: CustomQuickActionStore
     private let injector: TextInjector
     private let appIndex: AppIndex
+    private let hotKeys: HotKeyManager
+    private let favorites: FavoritesStore
+    private let visibility: VisibilityStore
+    private let ranking: LauncherRankingStore
+    private let aliases: AliasStore
     private let paletteCoordinator: PaletteCoordinator
     private let panels = QuickActionPanelController()
     private unowned let core: AppCore
 
-    private static let launcherCommands = Set(QuickAction.allCases.map(CommandID.init))
+    private static let launcherCommands = Set(BuiltInQuickAction.allCases.map(CommandID.init))
 
     /// One at a time: two runs race for one selection, and the second overwrites the first's work.
     @ObservationIgnored private var running: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
+    /// Cancellation is cooperative, so a cancelled run must not hide the pill a newer run showed.
+    @ObservationIgnored private var progressOwner: Int?
 
     init(
-        settings: AppSettings, store: QuickActionSettingsStore, injector: TextInjector,
-        appIndex: AppIndex, paletteCoordinator: PaletteCoordinator, core: AppCore
+        settings: AppSettings, store: QuickActionSettingsStore,
+        customActions: CustomQuickActionStore, injector: TextInjector,
+        appIndex: AppIndex, hotKeys: HotKeyManager, favorites: FavoritesStore,
+        visibility: VisibilityStore, ranking: LauncherRankingStore, aliases: AliasStore,
+        paletteCoordinator: PaletteCoordinator, core: AppCore
     ) {
         self.settings = settings
         self.store = store
+        self.customActions = customActions
         self.injector = injector
         self.appIndex = appIndex
+        self.hotKeys = hotKeys
+        self.favorites = favorites
+        self.visibility = visibility
+        self.ranking = ranking
+        self.aliases = aliases
         self.paletteCoordinator = paletteCoordinator
         self.core = core
     }
@@ -34,10 +63,13 @@ final class QuickActionCoordinator {
     /// Launcher rows come and go with the switch; the Carbon bindings stay registered.
     func applyEnabled() {
         appIndex.setCommandsVisible(Self.launcherCommands, settings.quickActionsEnabled)
+        applyCustomQuickActionsPresence()
         guard settings.quickActionsEnabled else {
             cancel()
+            core.applyInstalledAILifecycle()
             return
         }
+        core.applyInstalledAILifecycle()
         store.resolveModel(
             appleIntelligenceAvailable: core.aiSettings.isAppleIntelligenceAvailable(),
             fallback: core.aiSettings.defaultModel)
@@ -69,10 +101,96 @@ final class QuickActionCoordinator {
         }
     }
 
+    func applyCustomQuickActionsPresence() {
+        appIndex.setCustomQuickActions(
+            settings.quickActionsEnabled ? customActions.actions : [])
+    }
+
+    // MARK: - The reader's own actions
+
+    /// The route is stored only once the record is on disk, so a refused save leaves neither behind.
+    func addCustomQuickAction(
+        _ draft: CustomQuickAction, model: AIModelSelection?
+    ) throws(CustomQuickActionError) {
+        let action = try customActions.add(draft)
+        store.setModelOverride(model, for: .custom(action))
+    }
+
+    func updateCustomQuickAction(
+        _ draft: CustomQuickAction, model: AIModelSelection?
+    ) throws(CustomQuickActionError) {
+        try customActions.update(draft)
+        store.setModelOverride(model, for: .custom(draft))
+    }
+
+    func setPreviewsResult(_ previews: Bool, id: UUID) {
+        do {
+            try customActions.setPreviewsResult(previews, id: id)
+        } catch {
+            report(error)
+        }
+    }
+
+    func deleteCustomQuickAction(id: UUID) async {
+        guard let action = customActions.action(id: id) else { return }
+        guard
+            await core.confirm(
+                title: "Delete “\(action.name)”?",
+                message: "Its instructions, shortcut and learned ranking go with it.",
+                symbol: action.symbol, confirmTitle: "Delete")
+        else { return }
+        // Unwound only once the row is gone, so a kept record never loses its shortcut.
+        do {
+            guard let removed = try customActions.remove(id: id) else { return }
+            removeCustomQuickActionReferences(removed)
+        } catch {
+            report(error)
+        }
+    }
+
+    private func report(_ error: CustomQuickActionError) {
+        Task {
+            await core.showNotice(
+                title: "Couldn’t Save the Change", message: error.localizedDescription,
+                symbol: CustomQuickAction.sfSymbol, tone: .danger)
+        }
+    }
+
+    private func removeCustomQuickActionReferences(_ action: CustomQuickAction) {
+        let hotKeyAction = HotKeyAction.quickAction(id: action.id)
+        if hotKeys.recordingAction == hotKeyAction { hotKeys.recordingAction = nil }
+        hotKeys.setBinding(nil, for: hotKeyAction)
+        store.setModelOverride(nil, for: .custom(action))
+        favorites.remove(keys: [action.entryID])
+        visibility.removeItemKeys([action.entryID])
+        aliases.removeKeys([action.entryID])
+        ranking.reset(itemKey: action.entryID)
+    }
+
+    func run(id: UUID) {
+        guard let action = customActions.action(id: id) else { return }
+        run(.custom(action))
+    }
+
     func run(_ action: QuickAction) {
         guard settings.quickActionsEnabled, running == nil else { return }
-        let target = paletteCoordinator.targetApp
-        if paletteCoordinator.isVisible { paletteCoordinator.hidePalette(restoreFocus: false) }
+        let source =
+            paletteCoordinator.isVisible
+            ? InjectionTarget.behindPalette(
+                ownWindow: paletteCoordinator.previousOwnWindow, app: paletteCoordinator.targetApp)
+            : InjectionTarget.current()
+        let target: Target
+        if let editor = source?.ownEditor as? NoteTextView {
+            target = .note(
+                NoteSelection(
+                    editor: editor, document: core.notesCoordinator.editorInput,
+                    range: editor.selectedRange(), text: editor.injectableSelection))
+        } else {
+            target = .external(paletteCoordinator.targetApp)
+        }
+        if paletteCoordinator.isVisible {
+            paletteCoordinator.hidePalette(restoreFocus: source?.ownEditor is NoteTextView)
+        }
         start { [weak self] in await self?.begin(action, target: target) }
     }
 
@@ -80,6 +198,7 @@ final class QuickActionCoordinator {
         generation += 1
         running?.cancel()
         running = nil
+        hideProgress(ownedBy: progressOwner)
         panels.dismiss()
     }
 
@@ -95,10 +214,15 @@ final class QuickActionCoordinator {
         }
     }
 
-    private func begin(_ action: QuickAction, target: NSRunningApplication?) async {
+    private func begin(_ action: QuickAction, target: Target) async {
         let selection: String
         do {
-            selection = try await QuickActionRunner.selection(in: target, using: injector)
+            switch target {
+            case .external(let app):
+                selection = try await QuickActionRunner.selection(in: app, using: injector)
+            case .note(let note):
+                selection = try QuickActionRunner.accepted(note.text)
+            }
         } catch let failure as QuickActionFailure {
             reportRefusal(failure)
             return
@@ -135,7 +259,7 @@ final class QuickActionCoordinator {
     }
 
     private func perform(
-        _ state: QuickActionPanelState, target: NSRunningApplication?, previewing: Bool
+        _ state: QuickActionPanelState, target: Target, previewing: Bool
     ) async {
         do {
             let text = try await produce(state, previewing: previewing)
@@ -146,7 +270,7 @@ final class QuickActionCoordinator {
         } catch is CancellationError {
             return
         } catch let error as TextTranslator.Failure where error.needsDownload {
-            // Only SwiftUI's `translationTask` can fetch a pair, so this has to become a panel.
+            // A HUD cannot say where the download lives, so this has to become a panel.
             if !previewing { present(state, target: target) }
             state.requireLanguageDownload()
         } catch {
@@ -159,9 +283,17 @@ final class QuickActionCoordinator {
         _ state: QuickActionPanelState, previewing: Bool
     ) async throws -> String {
         guard !previewing else { return try await generate(state, streaming: true) }
-        core.showProgress(state.action.progressTitle)
-        defer { core.hideProgress() }
+        let mine = generation
+        progressOwner = mine
+        core.showProgress(state.action.progressTitle, onCancel: { [weak self] in self?.cancel() })
+        defer { hideProgress(ownedBy: mine) }
         return try await generate(state, streaming: false)
+    }
+
+    private func hideProgress(ownedBy owner: Int?) {
+        guard let owner, progressOwner == owner else { return }
+        progressOwner = nil
+        core.hideProgress()
     }
 
     private func generate(
@@ -170,7 +302,7 @@ final class QuickActionCoordinator {
         if state.action.usesTranslationFramework {
             return try await TextTranslator.translate(state.original, to: state.targetLanguage)
         }
-        let provider = try core.quickActionProvider()
+        let provider = try core.quickActionProvider(for: state.action)
         return try await QuickActionRunner.run(
             state.action, selection: state.original, using: provider,
             instructionOverride: store.settings.instructionOverride(for: state.action),
@@ -181,16 +313,28 @@ final class QuickActionCoordinator {
     }
 
     /// A replacement that never lands would otherwise lose the reply, so the clipboard keeps it.
-    private func deliver(_ text: String, to target: NSRunningApplication?, action: QuickAction) {
-        injector.replaceSelection(
-            with: text, in: target,
-            onDelivered: { [weak self] in self?.core.showMessage("\(action.title) applied") },
-            onFailed: { [weak self] in
-                Paster.copyPlainText(text)
-                self?.core.showMessage(
-                    "\(action.title) couldn't replace the selection — copied instead",
-                    tone: .danger)
-            })
+    private func deliver(_ text: String, to target: Target, action: QuickAction) {
+        let onDelivered: @MainActor @Sendable () -> Void = { [weak self] in
+            self?.core.showMessage("\(action.title) applied")
+        }
+        let onFailed: @MainActor @Sendable () -> Void = { [weak self] in
+            Paster.copyPlainText(text)
+            self?.core.showMessage(
+                "\(action.title) couldn't replace the selection — copied instead",
+                tone: .danger)
+        }
+        switch target {
+        case .external(let app):
+            injector.replaceSelection(
+                with: text, in: app, onDelivered: onDelivered, onFailed: onFailed)
+        case .note(let note):
+            guard core.notesCoordinator.editorInput == note.document,
+                note.editor.window?.isVisible == true,
+                note.editor.replaceUnchangedSelection(
+                    with: text, source: note.document.source, range: note.range)
+            else { onFailed(); return }
+            onDelivered()
+        }
     }
 
     /// A failure the reader cannot see is a hotkey that silently did nothing.
@@ -202,21 +346,21 @@ final class QuickActionCoordinator {
         state.fail(error.localizedDescription)
     }
 
-    private func present(_ state: QuickActionPanelState, target: NSRunningApplication?) {
+    private func present(_ state: QuickActionPanelState, target: Target) {
         panels.present(
             state,
+            metrics: settings.interfaceSize.metrics,
             languages: offeredLanguages,
             onRetranslate: { [weak self] language in
                 state.targetLanguage = language
                 self?.rerun(state, target: target)
             },
-            onDownloaded: { [weak self] in self?.rerun(state, target: target) },
             onReplace: { [weak self] text in
                 self?.deliver(text, to: target, action: state.action)
             })
     }
 
-    private func rerun(_ state: QuickActionPanelState, target: NSRunningApplication?) {
+    private func rerun(_ state: QuickActionPanelState, target: Target) {
         state.restart()
         start { [weak self] in await self?.perform(state, target: target, previewing: true) }
     }

@@ -16,18 +16,49 @@ struct ExtensionShortcutKeys: ViewModifier {
     }
 }
 
-/// Toasts a running view command raised, stacked above the footer.
-struct ExtensionToastOverlay: ViewModifier {
+struct ExtensionToastSlot: ViewModifier {
     let extensions: ExtensionManager
     let showing: Bool
 
     func body(content: Content) -> some View {
-        content.overlay(alignment: .bottom) {
-            if showing, !extensions.toasts.isEmpty {
-                ExtensionFeedbackOverlay(
-                    toasts: extensions.toasts,
-                    onToastAction: { extensions.runToastAction(token: $0) })
+        let toast = showing ? extensions.toasts.last : nil
+        ZStack(alignment: .leading) {
+            content
+                .opacity(toast == nil ? 1 : 0)
+                .allowsHitTesting(toast == nil)
+            if let toast {
+                ExtensionToastPill(
+                    toast: toast, onAction: { extensions.runToastAction(token: $0) },
+                    onDismiss: { extensions.hide(toast: toast.id) }
+                )
+                .id(toast.id)
+                .transition(.scale(scale: 0.5, anchor: .leading).combined(with: .opacity))
             }
+        }
+        .animation(.spring(duration: 0.3, bounce: 0.2), value: toast?.id)
+    }
+}
+
+struct ExtensionFormKeys: ViewModifier {
+    let field: ExtensionFormField
+    let onActivate: () -> Void
+    let onSubmit: () -> Void
+    @Environment(PaletteState.self) private var palette
+
+    func body(content: Content) -> some View {
+        content.onKeyPress(keys: ExtensionFormKey.enterKeys.union([.space]), phases: [.down, .repeat]) {
+            press in
+            switch ExtensionFormKey.resolve(
+                field: field, key: press.key, modifiers: press.modifiers,
+                repeating: press.phase == .repeat, menuOpen: palette.menuOpen,
+                composing: palette.isComposing)
+            {
+            case .activate: onActivate()
+            case .submit: onSubmit()
+            case .consume: break
+            case .ignored: return .ignored
+            }
+            return .handled
         }
     }
 }

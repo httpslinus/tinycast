@@ -11,6 +11,12 @@ struct InjectedText: Equatable, Sendable {
         self.text = text
         self.cursorOffsetFromEnd = cursorOffsetFromEnd
     }
+
+    /// UTF-16 distance from the start of the inserted text to where the caret should land.
+    var caretPrefixLength: Int {
+        let offset = min(max(cursorOffsetFromEnd ?? 0, 0), text.count)
+        return text[..<text.index(text.endIndex, offsetBy: -offset)].utf16.count
+    }
 }
 
 enum AccessibilityReplacement: Equatable {
@@ -22,8 +28,8 @@ enum AccessibilityReplacement: Equatable {
     var fallsBackToEvents: Bool { self == .unavailable }
 }
 
-/// The two judgements the Accessibility tier makes, kept pure so the harness can drive both.
-enum AccessibilityReplacementPolicy {
+/// The two judgements a replacement makes, kept pure so the harness can drive both tiers.
+enum TextReplacementPolicy {
     enum KeywordState: Equatable {
         case matched(NSRange)
         case pending
@@ -108,30 +114,25 @@ final class TextInjector {
     /// A paste is still in flight, or we still hold the pasteboard it borrowed.
     var isDelivering: Bool { !deliveryQueue.isIdle || activePasteboardLease != nil }
 
-    func prepareInteractiveExpansion(targetApp: NSRunningApplication?) -> Bool {
-        guard targetAcceptsInjection(targetApp), Permissions.ensureAccessibility() else {
-            activate(targetApp)
+    func prepareInteractiveExpansion(target: InjectionTarget?) -> Bool {
+        if let editor = target?.ownEditor { return editor.isEditable }
+        guard targetAcceptsInjection(target?.externalApp), Permissions.ensureAccessibility() else {
+            target?.restoreFocus()
             return false
         }
         return true
     }
 
-    func beginAutomaticExpansion(
-        targetApp: NSRunningApplication?
-    ) -> AutomaticGeneration? {
+    func beginAutomaticExpansion(target: InjectionTarget?) -> AutomaticGeneration? {
         cancelAutomaticExpansion()
-        guard
-            automaticExpansionIsAllowed(
-                generation: automaticGeneration,
-                targetApp: targetApp)
-        else { return nil }
+        guard expansionIsAllowed(generation: automaticGeneration, target: target) else { return nil }
         return automaticGeneration
     }
 
-    func cancelAutomaticExpansion(targetApp: NSRunningApplication? = nil) {
+    func cancelAutomaticExpansion(target: InjectionTarget? = nil) {
         automaticGeneration &+= 1
         deliveryQueue.cancelAutomatic()
-        activate(targetApp)
+        target?.restoreFocus()
     }
 
     func prepareForTermination() {
@@ -142,12 +143,12 @@ final class TextInjector {
 
     func cancelArgumentPrompt(
         automaticGeneration: AutomaticGeneration?,
-        targetApp: NSRunningApplication?
+        target: InjectionTarget?
     ) {
         if automaticGeneration != nil {
-            cancelAutomaticExpansion(targetApp: targetApp)
+            cancelAutomaticExpansion(target: target)
         } else {
-            activate(targetApp)
+            target?.restoreFocus()
         }
     }
 
@@ -161,7 +162,7 @@ final class TextInjector {
         return true
     }
 
-    func automaticExpansionIsAllowed(
+    private func automaticExpansionIsAllowed(
         generation: AutomaticGeneration,
         targetApp: NSRunningApplication?
     ) -> Bool {
@@ -173,13 +174,28 @@ final class TextInjector {
         return true
     }
 
+    /// In process there is nothing to grant, activate or post: our own view is the whole contract.
+    private func expansionIsAllowed(
+        generation: AutomaticGeneration,
+        target: InjectionTarget?
+    ) -> Bool {
+        switch target {
+        case .ownEditor(let editor):
+            return generation == automaticGeneration && settings.snippetsEnabled && editor.isEditable
+        case .external(let app):
+            return automaticExpansionIsAllowed(generation: generation, targetApp: app)
+        case nil:
+            return false
+        }
+    }
+
     func captureExpansionContext(
-        targetApp: NSRunningApplication?,
+        target: InjectionTarget?,
         clipboardHistory: [String]
     ) -> SnippetTemplateEngine.ExpansionContext {
         SnippetTemplateEngine.ExpansionContext(
             clipboardHistory: clipboardHistory,
-            selection: selectedText(in: targetApp) ?? "",
+            selection: selection(in: target),
             now: Date(),
             calendar: Calendar.current,
             locale: Locale.current,
@@ -194,7 +210,8 @@ final class TextInjector {
         onFailed: @escaping @MainActor () -> Void = {}
     ) {
         deliver(
-            InjectedText(text), targetApp: targetApp, expectedKeyword: nil, keywordLength: 0,
+            InjectedText(text), target: targetApp.map(InjectionTarget.external),
+            expectedKeyword: nil, keywordLength: 0,
             automaticGeneration: nil, onDelivered: onDelivered, onFailed: onFailed)
     }
 
@@ -244,22 +261,19 @@ final class TextInjector {
 
     func deliver(
         _ injected: InjectedText,
-        targetApp: NSRunningApplication?,
+        target: InjectionTarget?,
         expectedKeyword: String?,
         keywordLength: Int,
         automaticGeneration: AutomaticGeneration?,
         onDelivered: @escaping @MainActor () -> Void = {},
         onFailed: @escaping @MainActor () -> Void = {}
     ) {
+        let targetApp = target?.externalApp
         activate(targetApp)
         if let automaticGeneration {
-            guard
-                automaticExpansionIsAllowed(
-                    generation: automaticGeneration,
-                    targetApp: targetApp)
-            else { return }
+            guard expansionIsAllowed(generation: automaticGeneration, target: target) else { return }
         } else {
-            guard prepareInteractiveExpansion(targetApp: targetApp) else {
+            guard prepareInteractiveExpansion(target: target) else {
                 onFailed()
                 return
             }
@@ -267,14 +281,65 @@ final class TextInjector {
 
         deliveryQueue.enqueue(isAutomatic: automaticGeneration != nil) { [weak self] in
             guard let self else { return }
+            let completion = DeliveryCompletion(onDelivered: onDelivered, onFailed: onFailed)
+            if let editor = target?.ownEditor {
+                await self.deliverInProcess(
+                    injected,
+                    into: editor,
+                    expectedKeyword: expectedKeyword,
+                    keywordLength: keywordLength,
+                    automaticGeneration: automaticGeneration,
+                    completion: completion)
+                return
+            }
             await self.performDelivery(
                 injected,
                 targetApp: targetApp,
                 expectedKeyword: expectedKeyword,
                 keywordLength: keywordLength,
                 automaticGeneration: automaticGeneration,
-                completion: DeliveryCompletion(onDelivered: onDelivered, onFailed: onFailed))
+                completion: completion)
         }
+    }
+
+    /// Needs no grant, activation or pasteboard, but the keyword still converges on Rule 2.
+    private func deliverInProcess(
+        _ injected: InjectedText,
+        into editor: any InjectableTextView,
+        expectedKeyword: String?,
+        keywordLength: Int,
+        automaticGeneration: AutomaticGeneration?,
+        completion: DeliveryCompletion
+    ) async {
+        defer { completion.settle() }
+        for _ in 0..<Self.convergenceAttempts {
+            // The tap runs ahead of AppKit, so looking before the wait reads a stale view as a miss.
+            if keywordLength > 0 {
+                guard await wait(for: Self.convergenceInterval) else { return }
+            }
+            guard inProcessDeliveryIsAllowed(automaticGeneration: automaticGeneration, editor: editor)
+            else { return }
+            switch editor.keywordReplacementState(
+                expectedKeyword: expectedKeyword, keywordLength: keywordLength)
+            {
+            case .matched(let range):
+                editor.inject(injected, over: range)
+                completion.confirm()
+                return
+            case .rejected:
+                return
+            case .pending:
+                continue
+            }
+        }
+    }
+
+    private func inProcessDeliveryIsAllowed(
+        automaticGeneration: AutomaticGeneration?,
+        editor: any InjectableTextView
+    ) -> Bool {
+        guard let automaticGeneration else { return editor.isEditable }
+        return expansionIsAllowed(generation: automaticGeneration, target: .ownEditor(editor))
     }
 
     private func performDelivery(
@@ -590,7 +655,7 @@ final class TextInjector {
 
         let observed = stringValue(in: target.element)
         guard
-            AccessibilityReplacementPolicy.confirmsReplacement(
+            TextReplacementPolicy.confirmsReplacement(
                 originalValue: target.value,
                 replacementRange: target.replacementRange,
                 insertedText: injected.text,
@@ -601,11 +666,9 @@ final class TextInjector {
             return observed == target.value ? .unavailable : .rejected
         }
 
-        let cursorOffset = min(injected.cursorOffsetFromEnd ?? 0, injected.text.count)
-        let cursorIndex = injected.text.index(injected.text.endIndex, offsetBy: -cursorOffset)
-        let insertedPrefixLength = injected.text[..<cursorIndex].utf16.count
         _ = setSelectedRange(
-            NSRange(location: target.replacementRange.location + insertedPrefixLength, length: 0),
+            NSRange(
+                location: target.replacementRange.location + injected.caretPrefixLength, length: 0),
             in: target.element)
         return .delivered
     }
@@ -617,19 +680,19 @@ final class TextInjector {
         keywordLength: Int,
         automaticGeneration: AutomaticGeneration?
     ) async -> AccessibilityTargetState {
-        for attempt in 0..<Self.accessibilityConvergenceAttempts {
+        for attempt in 0..<Self.convergenceAttempts {
             let state = inspectAccessibilityTarget(
                 in: targetApp,
                 expectedKeyword: expectedKeyword,
                 keywordLength: keywordLength)
             guard case .pending = state else { return state }
-            guard attempt < Self.accessibilityConvergenceAttempts - 1,
+            guard attempt < Self.convergenceAttempts - 1,
                 automaticGeneration != nil,
                 deliveryIsAllowed(
                     automaticGeneration: automaticGeneration,
                     targetApp: targetApp,
                     promptForInteractiveAccessibility: false),
-                await wait(for: Self.accessibilityConvergenceInterval)
+                await wait(for: Self.convergenceInterval)
             else { return .unavailable }
         }
         return .unavailable
@@ -657,7 +720,7 @@ final class TextInjector {
                     replacementRange: originalRange))
         }
         guard let expectedKeyword, expectedKeyword.count == keywordLength else { return .rejected }
-        switch AccessibilityReplacementPolicy.keywordState(
+        switch TextReplacementPolicy.keywordState(
             value: value, selectedRange: originalRange, keyword: expectedKeyword)
         {
         case .matched(let replacementRange):
@@ -683,9 +746,9 @@ final class TextInjector {
         return CFGetTypeID(value) == AXTextMarkerRangeGetTypeID()
     }
 
-    /// A renderer converges in single-digit milliseconds; past this it was never going to.
-    private static let accessibilityConvergenceAttempts = 8
-    private static let accessibilityConvergenceInterval = Duration.milliseconds(5)
+    /// A renderer, or AppKit handing us our own keystroke, converges in single-digit milliseconds.
+    private static let convergenceAttempts = 8
+    private static let convergenceInterval = Duration.milliseconds(5)
 
     private func waitForPasteConfirmation(
         previousState: AccessibilityTextState?,
@@ -786,6 +849,14 @@ final class TextInjector {
         targetApp?.activate()
     }
 
+    private func selection(in target: InjectionTarget?) -> String {
+        switch target {
+        case .ownEditor(let editor): return editor.injectableSelection
+        case .external(let app): return selectedText(in: app) ?? ""
+        case nil: return ""
+        }
+    }
+
     private func selectedText(in targetApp: NSRunningApplication?) -> String? {
         guard Permissions.isAccessibilityTrusted(), let targetApp else { return nil }
         return AccessibilityText.selection(in: targetApp)
@@ -814,7 +885,9 @@ final class TextInjector {
                 virtualKey: 0,
                 keyDown: false)
         else { return nil }
-
+        // The source inherits held modifiers, and a hotkey's are still down while this types.
+        down.flags = []
+        up.flags = []
         tag(down)
         tag(up)
         down.keyboardSetUnicodeString(
@@ -994,8 +1067,6 @@ final class TemporaryPasteboardLease {
     private let pasteboard: any PasteboardAccess
     private let ownedChangeCount: Int
     private let original: PasteboardSnapshot
-    /// Set only when the clipboard already held a string, which restores in place at no cost.
-    private let temporaryItem: NSPasteboardItem?
     private var isFinished = false
 
     var isOwned: Bool {
@@ -1005,13 +1076,11 @@ final class TemporaryPasteboardLease {
     private init(
         pasteboard: any PasteboardAccess,
         ownedChangeCount: Int,
-        original: PasteboardSnapshot,
-        temporaryItem: NSPasteboardItem?
+        original: PasteboardSnapshot
     ) {
         self.pasteboard = pasteboard
         self.ownedChangeCount = ownedChangeCount
         self.original = original
-        self.temporaryItem = temporaryItem
     }
 
     static func begin(
@@ -1020,13 +1089,13 @@ final class TemporaryPasteboardLease {
         onMutation: (Int) -> Void = { _ in }
     ) -> TemporaryPasteboardLease? {
         guard let snapshot = PasteboardSnapshot(pasteboard: pasteboard),
-            let temporaryItems = snapshot.items(borrowingFor: text),
+            let temporaryItem = PasteboardSnapshot.temporaryItem(carrying: text),
             let originalItems = snapshot.pasteboardItems(),
             pasteboard.changeCount == snapshot.changeCount
         else { return nil }
 
         pasteboard.clearContents()
-        guard pasteboard.writeObjects(temporaryItems) else {
+        guard pasteboard.writeObjects([temporaryItem]) else {
             if originalItems.isEmpty || pasteboard.writeObjects(originalItems) {
                 onMutation(pasteboard.changeCount)
             }
@@ -1037,36 +1106,16 @@ final class TemporaryPasteboardLease {
         return TemporaryPasteboardLease(
             pasteboard: pasteboard,
             ownedChangeCount: ownedChangeCount,
-            original: snapshot,
-            temporaryItem: snapshot.firstStringData == nil ? nil : temporaryItems.first)
+            original: snapshot)
     }
 
+    /// The lent board holds nothing of the original, so restoring rewrites the snapshot whole.
     func restoreIfOwned() -> RestoreResult {
         guard !isFinished else { return .superseded }
         guard pasteboard.changeCount == ownedChangeCount else {
             isFinished = true
             return .superseded
         }
-        guard let temporaryItem, let originalStringData = original.firstStringData else {
-            return rewriteOriginal()
-        }
-        guard temporaryItem.setData(originalStringData, forType: .string) else {
-            if pasteboard.changeCount != ownedChangeCount {
-                isFinished = true
-                return .superseded
-            }
-            return .failed
-        }
-        guard pasteboard.changeCount == ownedChangeCount else {
-            isFinished = true
-            return .superseded
-        }
-        isFinished = true
-        return .restored(changeCount: ownedChangeCount)
-    }
-
-    /// A borrowed board has no original string to write back into, so the whole board is rewritten.
-    private func rewriteOriginal() -> RestoreResult {
         guard let items = original.pasteboardItems() else { return .failed }
         pasteboard.clearContents()
         isFinished = true
@@ -1104,33 +1153,21 @@ struct PasteboardSnapshot {
         self.changeCount = changeCount
     }
 
+    /// A kept `public.html` is the flavour a Chromium editor prefers, so we lend the text alone.
+    static func temporaryItem(carrying text: String) -> NSPasteboardItem? {
+        let item = NSPasteboardItem()
+        guard item.setString(text, forType: .string),
+            item.setData(Data(), forType: ClipboardManager.internalType)
+        else { return nil }
+        return item
+    }
+
     func pasteboardItems() -> [NSPasteboardItem]? {
-        makePasteboardItems(firstString: nil)
-    }
-
-    /// A board with no string of its own lends a fresh item instead of declining the loan.
-    func items(borrowingFor text: String) -> [NSPasteboardItem]? {
-        guard firstStringData != nil else {
-            let item = NSPasteboardItem()
-            guard item.setString(text, forType: .string),
-                item.setData(Data(), forType: ClipboardManager.internalType)
-            else { return nil }
-            return [item]
-        }
-        return makePasteboardItems(firstString: text)
-    }
-
-    private func makePasteboardItems(firstString: String?) -> [NSPasteboardItem]? {
         var pasteboardItems: [NSPasteboardItem] = []
         pasteboardItems.reserveCapacity(items.count)
-        for (index, item) in items.enumerated() {
+        for item in items {
             let pasteboardItem = NSPasteboardItem()
-            if index == 0, let firstString {
-                guard pasteboardItem.setString(firstString, forType: .string),
-                    pasteboardItem.setData(Data(), forType: ClipboardManager.internalType)
-                else { return nil }
-            }
-            for value in item.values where index != 0 || firstString == nil || value.type != .string {
+            for value in item.values {
                 guard pasteboardItem.setData(value.data, forType: value.type) else { return nil }
             }
             pasteboardItems.append(pasteboardItem)

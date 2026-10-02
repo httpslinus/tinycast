@@ -13,7 +13,25 @@ struct KeePassScreen: PaletteScreen {
         }
         return rows.isEmpty ? "Lock Database" : "Paste Password"
     }
-    var hasActionsWithoutRows: Bool { !coordinator.isShowingAutoLockSettings }
+    var actsWithoutRows: Bool { !coordinator.isShowingAutoLockSettings }
+    var hidesSearchField: Bool { coordinator.isShowingForm }
+
+    func hasPrimaryAction(at selection: Int) -> Bool { !coordinator.isShowingAutoLockSettings }
+    func hasActions(at selection: Int) -> Bool { !coordinator.isShowingAutoLockSettings }
+
+    func tab(at selection: Int, backwards: Bool) -> Bool {
+        guard coordinator.isShowingForm else { return false }
+        coordinator.advanceFormFocus(backwards: backwards)
+        return true
+    }
+
+    func shiftedPrimary(at selection: Int) -> Bool { pasteUsername(at: selection) }
+
+    func perform(_ shortcut: PaletteShortcut, at selection: Int) -> Bool {
+        guard shortcut == .pin, let entry = entry(at: selection) else { return false }
+        coordinator.togglePin(entry)
+        return true
+    }
 
     private func entry(at selection: Int) -> KeePassEntry? {
         let entries = rows
@@ -21,6 +39,7 @@ struct KeePassScreen: PaletteScreen {
     }
 
     func activate(at selection: Int) {
+        guard !coordinator.isShowingAutoLockSettings else { return }
         if !coordinator.isUnlocked {
             if coordinator.isLoading { coordinator.lock()
             } else if coordinator.store.databasePath.isEmpty { coordinator.pickFile(keyFile: false)

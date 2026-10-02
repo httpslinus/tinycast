@@ -7,6 +7,7 @@ enum BackupApplier {
         var settings: SettingsBackup.ApplySummary?
         var clipboard = 0
         var snippets = 0
+        var snippetsNeedEnabling = false
         var notes = 0
         var learning = 0
         /// Reported rather than thrown: a failure here must not abort the categories after it.
@@ -29,6 +30,8 @@ enum BackupApplier {
         if categories.contains(.snippets) {
             do {
                 summary.snippets = try await applySnippets(bundle, to: core)
+                summary.snippetsNeedEnabling =
+                    summary.snippets > 0 && !core.settings.snippetsEnabled
             } catch {
                 summary.problems.append("Couldn't import snippets: \(error.localizedDescription)")
             }
@@ -71,6 +74,14 @@ enum BackupApplier {
                 id: UUID(), kind: .image, text: nil, imagePath: url.path,
                 createdAt: item.createdAt, sourceBundleID: item.sourceBundleID,
                 pinnedAt: item.pinnedAt)
+        case .file:
+            // A path from another Mac names nothing here, so the row is dropped rather than dead.
+            guard let path = item.text, FileManager.default.fileExists(atPath: path) else {
+                return nil
+            }
+            return ClipboardItem(
+                id: UUID(), kind: .file, text: path, imagePath: nil, createdAt: item.createdAt,
+                sourceBundleID: item.sourceBundleID, pinnedAt: item.pinnedAt)
         }
     }
 
@@ -103,9 +114,9 @@ enum BackupApplier {
 
     private static func applyLearning(_ bundle: BackupBundle, to core: AppCore) -> Int {
         var applied = 0
-        if let records = bundle.decodeLearning(.ranking, as: [LauncherRankingRecord].self) {
-            core.launcherRanking.replace(records)
-            applied += records.count
+        if let visits = bundle.decodeLearning(.ranking, as: [String: LauncherVisit].self) {
+            core.launcherRanking.replace(visits)
+            applied += visits.count
         }
         if let records = bundle.decodeLearning(.emoji, as: [FrequentEmoji].self) {
             core.frequentEmoji.replace(records)

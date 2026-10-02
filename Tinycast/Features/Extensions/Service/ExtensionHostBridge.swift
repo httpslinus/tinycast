@@ -6,6 +6,8 @@ import Foundation
 protocol ExtensionHostContext: AnyObject {
     /// The extension whose command is running — the namespace for storage, cache and preferences.
     var activeExtensionName: String? { get }
+    /// Background runs report no UI: toasts, HUDs and dialogs would fire on a timer.
+    var activeLaunchType: ExtensionLaunchType { get }
     var storage: ExtensionStorage { get }
     /// The app a paste would land in — the palette's recorded `previousApp`.
     var pasteTarget: NSRunningApplication? { get }
@@ -18,13 +20,19 @@ protocol ExtensionHostContext: AnyObject {
     func popToRoot()
     func clearSearchBar()
     func openPreferences(scope: String)
+    /// Persists a `subtitle` (or clears it on `null`); a missing key leaves it alone.
+    func updateCommandMetadata(subtitle: String?)
     func present(toast: ExtensionToast) -> Int
     func update(toast id: Int, with toast: ExtensionToast)
     func hide(toast id: Int)
     func showHUD(_ text: String)
     func confirmAlert(_ alert: ExtensionAlert) async -> Bool
     func openWithPicker(path: String) async
-    func launch(command: String, extensionName: String?, arguments: [String: String]) throws
+    func launch(
+        command: String, extensionName: String?, arguments: [String: String],
+        fallbackText: String?, launchType: ExtensionLaunchType, launchContext: [String: RenderValue]
+    ) throws
+    func launch(_ link: ExtensionDeepLink) throws
     func authorizeOAuth(options: ExtensionOAuthAuthorizeOptions) async throws -> ExtensionOAuthAuthorizeResult
     func getOAuthTokens(providerId: String) -> String?
     func setOAuthTokens(providerId: String, tokens: String)
@@ -119,13 +127,22 @@ enum ExtensionHostError: LocalizedError {
 final class ExtensionHostBridge: ExtensionHostAPI {
     weak var context: ExtensionHostContext?
     private let clipboardStore: ClipboardStore
-    private let fetcher = ExtensionFetcher()
+    private let fetcher: ExtensionFetcher
+    private let sockets = ExtensionWebSocketBridge()
 
-    init(clipboardStore: ClipboardStore) {
+    init(clipboardStore: ClipboardStore, fetcher: ExtensionFetcher = ExtensionFetcher()) {
         self.clipboardStore = clipboardStore
+        self.fetcher = fetcher
+    }
+
+    func scoped(to context: ExtensionHostContext) -> ExtensionHostBridge {
+        let bridge = ExtensionHostBridge(clipboardStore: clipboardStore, fetcher: fetcher)
+        bridge.context = context
+        return bridge
     }
 
     func perform(api: String, method: String, arguments: [RenderValue]) async throws -> String {
+        guard context != nil else { throw ExtensionHostError.noActiveExtension }
         let value = try await dispatch(api: api, method: method, arguments: arguments)
         return ExtensionRuntime.jsonString(from: value)
     }
@@ -139,7 +156,10 @@ final class ExtensionHostBridge: ExtensionHostAPI {
         case "feedback": return try await feedback(method: method, arguments: arguments)
         case "system": return try await system(method: method, arguments: arguments)
         case "fetch": return try await fetcher.request(arguments.first)
-        case "proc": return try await ExtensionAsyncProcess.run(arguments.first)
+        case "websocket": return try await sockets.perform(method: method, arguments: arguments)
+        case "dns": return await ExtensionNameResolver.resolve(arguments.first)
+        case "proc" where method == "read": return try await ExtensionAsyncProcess.read(arguments)
+        case "proc": return try await ExtensionAsyncProcess.wait(arguments.first)
         case "oauth": return try await oauth(method: method, arguments: arguments)
         default: throw ExtensionHostError.unknown("\(api).\(method)")
         }
@@ -152,21 +172,43 @@ final class ExtensionHostBridge: ExtensionHostAPI {
         return (context, name)
     }
 
+    /// Called wherever a command's context is discarded: nothing left open outlives its session.
+    func sessionEnded() {
+        sockets.closeAll()
+    }
+
     // MARK: - Clipboard
 
     private func clipboard(method: String, arguments: [RenderValue]) throws -> Any? {
         switch method {
         case "copy", "paste":
             let content = arguments.first?.objectValue ?? [:]
+            let options = arguments[safe: 1]?.objectValue ?? [:]
+            let concealed =
+                options["concealed"]?.boolValue == true
+                || options["transient"]?.boolValue == true
             // A file goes on the pasteboard as a file, so it pastes as the picture it is.
             if let path = content["file"]?.stringValue, !path.isEmpty {
-                writeFileToPasteboard(path)
-                if method == "paste" { Paster.postCommandV() }
+                let target = context?.pasteTarget
+                if method == "paste" { context?.closeMainWindow(clearRootSearch: false) }
+                writeFileToPasteboard(path, concealed: method == "copy" && concealed)
+                guard method == "paste" else { return nil }
+                target?.activate()
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard !Task.isCancelled else { return }
+                    Paster.postCommandV()
+                }
                 return nil
             }
             guard let text = clipboardText(from: content) else { return nil }
             if method == "copy" {
-                Paster.copyString(text)
+                // History records unmarked copies; ConcealedType is how secrets stay out.
+                if concealed {
+                    writeConcealedString(text)
+                } else {
+                    Paster.copyPlainText(text)
+                }
             } else {
                 Paster.pasteString(text, previousApp: context?.pasteTarget)
             }
@@ -190,15 +232,30 @@ final class ExtensionHostBridge: ExtensionHostAPI {
         }
     }
 
-    /// The file and its picture both: Finder takes the URL, a chat box takes the image data.
-    private func writeFileToPasteboard(_ path: String) {
+    /// The file, its picture and its path: receivers choose the representation they support.
+    private func writeFileToPasteboard(_ path: String, concealed: Bool) {
         let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         var items: [NSPasteboardWriting] = [url as NSURL]
         if let image = NSImage(contentsOf: url) { items.append(image) }
         pasteboard.writeObjects(items)
+        pasteboard.setString(url.path, forType: .string)
+        if concealed {
+            pasteboard.setData(Data(), forType: Self.concealedPasteboardType)
+        }
     }
+
+    private func writeConcealedString(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.declareTypes([.string, Self.concealedPasteboardType], owner: nil)
+        pasteboard.setString(text, forType: .string)
+        pasteboard.setData(Data(), forType: Self.concealedPasteboardType)
+    }
+
+    private static let concealedPasteboardType = NSPasteboard.PasteboardType(
+        "org.nspasteboard.ConcealedType")
 
     private func clipboardText(from content: [String: RenderValue]) -> String? {
         if let text = content["text"]?.stringValue { return text }
@@ -262,6 +319,7 @@ final class ExtensionHostBridge: ExtensionHostAPI {
     // MARK: - Window
 
     private func window(method: String, arguments: [RenderValue]) -> Any? {
+        guard context?.activeLaunchType != .background else { return nil }
         switch method {
         case "close":
             let options = arguments.first?.objectValue ?? [:]
@@ -282,6 +340,7 @@ final class ExtensionHostBridge: ExtensionHostAPI {
 
     private func feedback(method: String, arguments: [RenderValue]) async throws -> Any? {
         guard let context else { throw ExtensionHostError.noActiveExtension }
+        guard context.activeLaunchType != .background else { return nil }
         switch method {
         case "showToast":
             guard let payload = arguments.first?.objectValue else { return nil }
@@ -369,13 +428,19 @@ final class ExtensionHostBridge: ExtensionHostAPI {
             for (key, value) in options["arguments"]?.objectValue ?? [:] {
                 launchArguments[key] = value.stringValue
             }
+            let launchType: ExtensionLaunchType =
+                options["type"]?.stringValue == ExtensionLaunchType.background.rawValue
+                ? .background : .userInitiated
             try context?.launch(
                 command: name, extensionName: options["extensionName"]?.stringValue,
-                arguments: launchArguments)
+                arguments: launchArguments, fallbackText: options["fallbackText"]?.stringValue,
+                launchType: launchType, launchContext: options["context"]?.objectValue ?? [:])
             return nil
 
         case "updateCommandMetadata":
-            // Subtitle metadata only shows on menu-bar commands, which Tinycast doesn't run.
+            let fields = arguments.first?.objectValue ?? [:]
+            guard fields.keys.contains("subtitle") else { return nil }
+            context?.updateCommandMetadata(subtitle: fields["subtitle"]?.stringValue)
             return nil
 
         default:
@@ -388,7 +453,7 @@ final class ExtensionHostBridge: ExtensionHostAPI {
             URL(string: target).flatMap { $0.scheme == nil ? nil : $0 }
             ?? URL(fileURLWithPath: (target as NSString).expandingTildeInPath)
         // Extensions address Raycast by scheme; handing that to the workspace would launch Raycast.
-        if let scheme = url.scheme, scheme == "raycast" || scheme == "raycastinternal" {
+        if ExtensionDeepLink.claims(url) {
             openRaycastURL(url)
             return
         }
@@ -411,10 +476,7 @@ final class ExtensionHostBridge: ExtensionHostAPI {
 
     /// A command URL runs it when installed; every other Raycast URL just brings the palette back.
     private func openRaycastURL(_ url: URL) {
-        let path = url.pathComponents.filter { $0 != "/" }
-        if url.host == "extensions", path.count >= 3,
-            (try? context?.launch(command: path[2], extensionName: path[1], arguments: [:])) != nil
-        {
+        if let link = ExtensionDeepLink.parse(url: url), (try? context?.launch(link)) != nil {
             return
         }
         context?.reopenPalette()

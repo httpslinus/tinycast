@@ -1,7 +1,11 @@
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import type { ReactNode } from "react";
 import { DocsProvider } from "../../components/docs-provider";
-import { DiscordLogo, GitHubLogo, Logo } from "../../components/ui/icon";
+import {
+  DiscordLogo,
+  GitHubLogo,
+  Logo,
+} from "../../components/ui/icon";
 import { site } from "../../data/site";
 import { source } from "../../lib/source";
 

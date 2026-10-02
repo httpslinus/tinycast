@@ -1,10 +1,14 @@
 import SwiftUI
 
 struct LauncherList: View {
+
+    @Environment(\.metrics) private var metrics
     let results: [AppEntry]
     /// The flat row id the screen has selected, not an entry id: a fallback can repeat a result.
     let selectedRowID: String?
     let favoriteCount: Int
+    let meetingCount: Int
+    let suggestionCount: Int
     let showSections: Bool
     /// Changes only when the list should scroll, so mouse selection never yanks it.
     let scroll: ScrollIntent
@@ -15,6 +19,7 @@ struct LauncherList: View {
     var onCardActions: () -> Void = {}
     let onActivate: (AppEntry) -> Void
     let onActions: (AppEntry) -> Void
+    let onDropped: () -> Void
     /// The `Use "…" with` section, always last; nil when nothing is typed.
     var fallbacks: FallbackSection?
     @Environment(RunningAppsMonitor.self) private var runningApps
@@ -92,7 +97,9 @@ struct LauncherList: View {
         }
         var rows: [Row] = cardRows
         let favorites = results.prefix(favoriteCount)
-        let rest = results.dropFirst(favoriteCount)
+        let meetings = results.dropFirst(favoriteCount).prefix(meetingCount)
+        let suggestions = results.dropFirst(favoriteCount + meetingCount).prefix(suggestionCount)
+        let rest = results.dropFirst(favoriteCount + meetingCount + suggestionCount)
         var grouped: [AppEntry.Kind: [AppEntry]] = [:]
         for app in rest { grouped[app.kind, default: []].append(app) }
         if !favorites.isEmpty {
@@ -102,10 +109,19 @@ struct LauncherList: View {
                     .app($1, slot: FavoriteSlots.digit(at: $0))
                 })
         }
+        if !meetings.isEmpty {
+            rows.append(.header(AppEntry.Kind.meeting.descriptor.sectionTitle))
+            rows.append(contentsOf: meetings.map { .app($0, slot: nil) })
+        }
+        if !suggestions.isEmpty {
+            rows.append(.header("Suggestions"))
+            rows.append(contentsOf: suggestions.map { .app($0, slot: nil) })
+        }
         // Publication order, so rows match the flat index.
         let kinds: [AppEntry.Kind] = [
-            .meeting, .application, .systemSettings, .extensionCommand, .quicklink, .snippet,
-            .systemAction, .windowCommand, .customCommand, .command
+            .meeting, .application, .systemSettings, .extensionCommand, .quicklink, .appleShortcut,
+            .snippet, .systemAction, .windowLayout, .windowRoom, .windowCommand, .customCommand,
+            .quickAction, .command
         ]
         for kind in kinds {
             guard let group = grouped[kind], !group.isEmpty else { continue }
@@ -143,7 +159,7 @@ struct LauncherList: View {
                                         .contentShape(Rectangle())
                                         .onTapGesture(perform: onActivateCard)
                                         .onRightClick(perform: onCardActions)
-                                        .padding(.bottom, Theme.Spacing.xs)
+                                        .padding(.bottom, metrics.spacing.xs)
                                         .selectionFrame(cardSelected)
                                 case .app(let app, let slot):
                                     AppRow(
@@ -153,7 +169,7 @@ struct LauncherList: View {
                                         slot: slot
                                     )
                                     .contentShape(Rectangle())
-                                    .onTapGesture { onActivate(app) }
+                                    .onRowTap(drag: drag(for: app)) { onActivate(app) }
                                     .onRightClick { onActions(app) }
                                     .selectionFrame(app.id == selectedRowID)
                                 case .fallback(let app, let index):
@@ -168,9 +184,9 @@ struct LauncherList: View {
                                 }
                             }
                         }
-                        .padding(.horizontal, Theme.Spacing.md)
-                        .padding(.top, Theme.Spacing.xs)
-                        .padding(.bottom, Theme.Spacing.md)
+                        .padding(.horizontal, metrics.spacing.md)
+                        .padding(.top, metrics.spacing.xs)
+                        .padding(.bottom, metrics.spacing.md)
                         .hideNativeScrollers()
                         .scrollOriginAnchor()
                     }
@@ -182,6 +198,14 @@ struct LauncherList: View {
                 }
             }
         }
+    }
+
+    /// Cache-only icon: the row holds its own smaller bitmap, and a decode would stall the drag.
+    private func drag(for app: AppEntry) -> RowDrag? {
+        guard app.canDragOut else { return nil }
+        return RowDrag(
+            item: { .file(app.url, image: IconCache.cached(app.iconSource, fileURL: app.url)) },
+            dropped: onDropped)
     }
 }
 
@@ -203,6 +227,8 @@ private struct LeadCardView: View {
 }
 
 private struct AppRow: View {
+
+    @Environment(\.metrics) private var metrics
     let app: AppEntry
     let selected: Bool
     let running: Bool
@@ -230,9 +256,9 @@ private struct AppRow: View {
     }
 
     var body: some View {
-        HStack(spacing: Theme.Spacing.lg) {
-            AppIconView(app: app)
-                .frame(width: Theme.Size.rowIcon, height: Theme.Size.rowIcon)
+        HStack(spacing: metrics.spacing.lg) {
+            AppIconView(app: app, pointSize: metrics.size.resultRowIcon)
+                .frame(width: metrics.size.resultRowIcon, height: metrics.size.resultRowIcon)
                 .overlay(alignment: .bottom) {
                     if running {
                         Circle()
@@ -241,50 +267,61 @@ private struct AppRow: View {
                             .offset(y: 3)
                     }
                 }
+            if app.kind == .meeting {
+                MeetingEntryContent(entryID: app.id) { meeting, _ in
+                    CalendarBar(color: meeting.calendarColor)
+                }
+            }
             Text(app.name)
-                .font(Theme.Typography.rowTitle)
+                .font(metrics.typography.rowTitle)
                 .lineLimit(1)
             if let subtitle = app.subtitle {
                 Text(subtitle)
-                    .font(Theme.Typography.rowTrailing)
+                    .font(metrics.typography.rowTrailing)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             if let alias = aliases.alias(for: app.preferenceKey) {
                 Text(alias)
-                    .font(Theme.Typography.rowTrailing)
+                    .font(metrics.typography.rowTrailing)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .padding(.horizontal, Theme.Spacing.sm)
-                    .padding(.vertical, Theme.Spacing.xxs)
+                    .padding(.horizontal, metrics.spacing.sm)
+                    .padding(.vertical, metrics.spacing.xxs)
                     .background(
-                        RoundedRectangle(cornerRadius: Theme.Radius.menu, style: .continuous)
+                        RoundedRectangle(cornerRadius: metrics.radius.menu, style: .continuous)
                             .fill(Theme.Colors.controlSurface))
             }
             if let caps = shortcutCaps {
-                HStack(spacing: Theme.Spacing.xxs) {
+                HStack(spacing: metrics.spacing.xxs) {
                     ForEach(Array(caps.enumerated()), id: \.offset) { _, cap in
                         KeyCapChip(text: cap, style: .outline)
                     }
                 }
             }
             Spacer()
+            if let refresh = app.backgroundRefresh {
+                ExtensionRefreshIndicator(state: refresh)
+                    .font(metrics.typography.rowTrailing)
+            }
             // Holding ⌘ turns the trailing label into the chord that launches this row.
             if let slot, palette.commandHeld {
-                HStack(spacing: Theme.Spacing.xxs) {
+                HStack(spacing: metrics.spacing.xxs) {
                     KeyCapChip(text: "⌘", style: .outline)
                     KeyCapChip(text: String(slot), style: .outline)
                 }
+            } else if app.kind == .meeting {
+                MeetingEntryContent(entryID: app.id) { MeetingTiming(meeting: $0, now: $1) }
             } else {
                 Text(app.kindLabel)
-                    .font(Theme.Typography.rowTrailing)
+                    .font(metrics.typography.rowTrailing)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.sm)
+        .padding(.horizontal, metrics.spacing.md)
+        .padding(.vertical, metrics.spacing.sm)
         .background(
-            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+            RoundedRectangle(cornerRadius: metrics.radius.row, style: .continuous)
                 .fill(fill)
         )
         .armedHover($hovered)

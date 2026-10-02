@@ -3,13 +3,14 @@
 `Features/HotKeys/` holds:
 
 - `KeyShortcut` — Sendable model, Carbon keycode + modifiers, layout-aware glyphs via `UCKeyTranslate`.
-- `HotKeyBinding` — what an action is actually bound to: a `.combo(KeyShortcut)` or a
-  `.doubleTap(DoubleTapModifier)`.
+- `HotKeyBinding` — what an action is bound to: `.combo(KeyShortcut)`,
+  `.doubleTap(DoubleTapModifier)`, `.globe`, or `.doubleGlobe`.
 - `HotKeyCenter` — the Carbon `RegisterEventHotKey` layer, pausable.
-- `DoubleTapModifier` / `DoubleTapDetector` / `DoubleTapMonitor` — the double-tap stack.
+- `DoubleTapModifier` / `DoubleTapDetector` — the double-tap recognizer.
+- `GlobeTapDetector` / `ModifierTapMonitor` — Globe recognition and the shared modifier-only tap.
 
 `HotKeyManager` owns them all: persistence, conflict lookup, and dispatch. Every action reads and
-writes one `HotKeyBinding`, so the two kinds share persistence, conflict detection, the recorder and
+writes one `HotKeyBinding`, so the four cases share persistence, conflict detection, the recorder and
 the keycap rendering — only the _engine_ differs.
 
 ## Invariants
@@ -24,15 +25,16 @@ the keycap rendering — only the _engine_ differs.
 - **A command that opens a palette mode toggles it.** Every one of them enters through
   `PaletteCoordinator.togglePalette(mode:)`, so a second press closes what the first opened. From a
   launcher row the palette is in `.launcher`, so the row always re-points instead.
-- **`HotKeyBinding` is the one thing an action is bound to, and it has two cases with two engines.** A
-  `.combo` is a Carbon registration; a `.doubleTap` is recognized by `DoubleTapMonitor`, because Carbon
-  cannot see a lone modifier at all. Its `Codable` is the synthesised one.
+- **`HotKeyBinding` is the one thing an action is bound to, with four cases and two engines.** A
+  `.combo` is a Carbon registration; `.doubleTap`, `.globe` and `.doubleGlobe` are recognized by
+  `ModifierTapMonitor`, because Carbon cannot see a lone modifier at all. Its `Codable` is the
+  synthesised one.
 - `KeyShortcut`'s hand-written `init(from:)` is a correctness seam, not a format one: it routes every
   decode through the initializer that masks device modifier bits off.
-- **`Model/DoubleTapModifier.swift` and `Model/DoubleTapDetector.swift` stay Foundation-only and pure**
-  with the clock injected as a parameter, for `hotkey-test`. Every `CGEvent` call lives in
-  `Service/DoubleTapMonitor.swift`, which is listen-only, installs *only* while something is bound to a
-  double-tap, and never prompts for Accessibility.
+- **The modifier-only detectors stay Foundation-only and pure** for `hotkey-test`, with the clock
+  injected as a parameter. Every `CGEvent` call lives in
+  `Service/ModifierTapMonitor.swift`, which is listen-only, installs *only* while a modifier-only
+  shortcut is bound, and never prompts for Accessibility.
 - **`KeyShortcut.hyperChord(includesShift:)` is the only spelling of the Hyper chord**, read by both the
   ✦ collapse and the re-point below. `HyperKeyTap` composes its own flags because it also needs the
   left-side device bits, which no display path wants.
@@ -41,13 +43,33 @@ the keycap rendering — only the _engine_ differs.
 
 Bindings persist as JSON strings under `hotkey.<action>` UserDefaults keys, computed in one place —
 `HotKeyAction.defaultsKey`, which doubles as the `HotKeyCenter` registration id. The set of bound
-bundle IDs lives in `boundAppBundleIDs` and is re-registered on launch. System Settings panes use
-`boundPaneBundleIDs`; custom commands and quicklinks use their stable UUIDs in
-`boundCustomCommandIDs` and `boundQuicklinkIDs`. Those two are the per-item case — unlike a fixed
-catalog, there is no `allCases` to walk — so each needs an index for `start()` to re-register from
+bundle IDs lives in `boundAppBundleIDs` and is re-registered on launch. After every `AppIndex` scan,
+`HotKeyManager.removeAppBindings` clears the binding of an app that is gone from both the index and
+LaunchServices: its Settings row went with it, so nothing else could clear the chord. Requiring both
+keeps a dropped search scope from deleting a working shortcut, and running on unchanged scans too
+covers LaunchServices still resolving an app for a few seconds after it is trashed.
+
+Window management's shortcuts are also spelled as typeable chords (`ctrl+option+left`) in the opt-in
+[settings file](settings-file.md). `HotKeySpelling` is that grammar; the file applies through
+`setBinding`, so `UserDefaults` stays the one store either way.
+
+System Settings panes use `boundPaneBundleIDs`; custom commands, quicklinks, window layouts, rooms
+and custom window sizes use their stable UUIDs in `boundCustomCommandIDs`, `boundQuicklinkIDs`,
+`boundWindowLayoutIDs`, `boundWindowRoomIDs` and `boundCustomWindowSizeIDs`. Those five are the per-item case — unlike a fixed catalog, there is no `allCases` to walk — so each needs an index for `start()`
+to re-register from
 and to prune bindings whose record was deleted while Tinycast wasn't running. That prune is why
 `QuicklinkStore` loads at launch even when the feature is off
 (see [quicklinks.md](quicklinks.md#hotkeys)).
+Apple Shortcuts keep the same kind of index in `boundAppleShortcutIDs`, pruned not at launch but after
+the first successful read of the library, since a failed read looks exactly like deletion
+(see [apple-shortcuts.md](apple-shortcuts.md#sweeping-deleted-shortcuts)).
+
+Snippets index `StoredSnippet.ID`, the file's path, in `boundSnippetIDs`. The store runs only while
+the feature is on, so they are swept not at launch but on every snapshot, by
+`removeSnippetBindings`; a file that fails to parse still counts, since it is mid-edit rather than
+gone. A rename outside Tinycast or a new Snippets Folder therefore drops the shortcut, and none
+travels in a backup, where an imported snippet lands at a new path
+(see [snippets.md](snippets.md#shortcuts)).
 
 `HotKeyBinding` takes the synthesised `Codable`, so a `.combo` writes
 `{"combo":{"_0":{"carbonKeyCode":N,"carbonModifiers":N}}}` and a `.doubleTap` writes
@@ -61,11 +83,11 @@ names the three exceptions. Open in Browser and Run Shell Command are query-driv
 typed text a chord has none of — and Quit is withheld so no chord can terminate the app outright. The
 list is a deny-list rather than an allow-list, so a new command still arrives bindable without an edit
 there. A binding therefore persists under `hotkey.<command raw value>`, as in
-`hotkey.command:clipboard-history`, which is also what puts a recorder on every row in
-Settings ▸ Commands and a keycap on every launcher row. `hotkey.togglePalette` is the one fixed action
-with no command row. A command reachable from its own feature pane is one binding shown in two places,
-not two settings, and `HotKeyManager` names them all through `CommandID`, so a conflict callout spells
-an action exactly as its command row does.
+`hotkey.command:clipboard-history`, which is also what puts a recorder on the command's row and a
+keycap on every launcher row. That row is in exactly one pane — Settings ▸ Commands, or the feature's
+own pane when `SettingsTab.ownedCommands` names it. `hotkey.togglePalette` is the one fixed action with
+no command row. `HotKeyManager` names them all through `CommandID`, so a conflict callout spells an
+action exactly as its command row does.
 
 Like a window command, the chord registers regardless of the launcher row. Search Files and Notes both
 re-check their feature switches before opening; see [file-search.md](file-search.md#invocation) and
@@ -81,6 +103,18 @@ feature switch is off — `WindowCommandCoordinator.runWindowCommand` re-checks 
 [window-management.md](window-management.md)); a system-action shortcut likewise goes through
 `SystemActionCoordinator.runSystemAction(id:)`, so the confirmation gate holds for a hotkey exactly as it does for the
 palette.
+
+## Modifier-only shortcuts
+
+Globe/fn can be bound once (`.globe`) or twice (`.doubleGlobe`). The recorder waits briefly after the
+first release so another press can select the double binding; otherwise it saves the single one.
+Globally, a single Globe fires on release when no double Globe action is bound. When both are bound,
+the single action waits until the double-tap window expires. Another modifier, key, or mouse click
+cancels the gesture, even while a single tap awaits the second. Both the monitor and the recorder
+check the physical `kVK_Function` keycode, not just the fn flag, because F-keys also carry that flag.
+It shares the double-tap's listen-only monitor, permission warning, lifecycle and pause while
+recording. macOS may perform its own Globe action too; set “Press fn/Globe key to” to “Do Nothing” in
+Keyboard settings if it conflicts. Globe+key chords use Carbon registration, like other combos.
 
 ## Double-tap modifiers
 
@@ -104,8 +138,8 @@ It **fires on the second release, not the second press**. The modifier is then a
 action runs, so the palette never opens with a phantom ⌘ held and focus restoration isn't polluted —
 and "double-tap and hold" is a deliberate non-event.
 
-`DoubleTapMonitor` is the one platform file. It is a **listen-only** `CGEventTap` and it installs only
-while something is actually bound to a double-tap, so users who never use the feature pay nothing. Two
+`ModifierTapMonitor` is the one platform file. It is a **listen-only** `CGEventTap` and it installs only
+while a modifier-only shortcut is bound, so users who never use the feature pay nothing. Two
 details are load-bearing:
 
 - It is `.tailAppendEventTap`, unlike the two head-inserted taps, so it observes events **after**
@@ -144,9 +178,13 @@ window — that is un-remapped HID behaviour, not something Tinycast can stop.
 
 Once remapped, Caps Lock arrives as **keyDown/keyUp** rather than `flagsChanged`. Both ends are
 converted into Left Control `flagsChanged` transitions, so everything downstream sees the Hyper chord
-move with the key rather than a swallowed press. A classic `IOHIDSystem` connection reads and drives
-the Caps Lock LED and lock state; it is used only by the explicit Quick Press toggle and the one-time
-unlatch when the remap is installed.
+move with the key rather than a swallowed press. That conversion is also why the **fn bit is scrubbed
+from both ends**: every function key reports `NX_SECONDARYFNMASK`, harmless on a keyDown but read as a
+real fn press once the event is a `flagsChanged`, which fired anything bound to fn on every Hyper
+press. Only the Hyper key's own two events are scrubbed, so Hyper+F-key and Hyper+arrow keep the fn
+bit they are entitled to. A classic `IOHIDSystem` connection reads and drives the Caps Lock LED and
+lock state; it is used only by the explicit Quick Press toggle and the one-time unlatch when the remap
+is installed.
 
 ### Press tracking uses toggle semantics
 
@@ -204,9 +242,9 @@ stops until this session is active again. The HID remap outlives the process, so
 
 The settings recorder (`Features/HotKeys/UI/ShortcutRecorder.swift`) is deliberately **not** a focusable
 control: the active recorder is `HotKeyManager.recordingAction` state, and keys are captured by local
-NSEvent monitors while both engines are paused. It records both kinds — type a combo, or double-tap a
-modifier — by feeding its `.flagsChanged` / `.keyDown` monitors into the _same_ `DoubleTapDetector`
-the global monitor uses, so recording needs no event tap and no permission.
+NSEvent monitors while both engines are paused. It records combos, double-tapped modifiers and single
+or double Globe taps by feeding its `.flagsChanged` / `.keyDown` monitors into the same pure detectors
+as the global monitor, so recording needs no event tap and no permission.
 
 Setting `recordingAction` is what starts and stops the capture, so there is exactly **one**
 `ShortcutCaptureSession` (`HotKeys/Service/`) for the app rather than one per row — which is what lets the

@@ -4,7 +4,7 @@ import AppKit
 @MainActor
 final class SystemActionCoordinator {
     private let paletteCoordinator: PaletteCoordinator
-    private let volumeHUD = VolumeHUDController()
+    @ObservationIgnored private lazy var volumeHUD = VolumeHUDController(settings: core.settings)
     /// Dialog and message-HUD presentation only — never for state this type owns.
     private unowned let core: AppCore
 
@@ -25,7 +25,9 @@ final class SystemActionCoordinator {
         case .computed:
             await quitAllApps()
             return
-        case .required(let title, let message):
+        case .followsFinder where !SystemActionRunner.finderWarnsBeforeEmptyingTrash:
+            break
+        case .required(let title, let message), .followsFinder(let title, let message):
             guard
                 await core.confirm(
                     title: title, message: message, symbol: action.sfSymbol,

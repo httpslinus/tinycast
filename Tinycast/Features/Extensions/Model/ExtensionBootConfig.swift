@@ -10,7 +10,6 @@ struct ExtensionBootConfig: Sendable {
     var homeDirectory: String
     var temporaryDirectory: String
     var workingDirectory: String
-    var cpuCount: Int
     var totalMemory: Double
     var environmentVariables: [String: String]
 
@@ -36,7 +35,6 @@ struct ExtensionBootConfig: Sendable {
             homeDirectory: FileManager.default.homeDirectoryForCurrentUser.path,
             temporaryDirectory: FileManager.default.temporaryDirectory.path,
             workingDirectory: supportDirectory.path,
-            cpuCount: info.processorCount,
             totalMemory: Double(info.physicalMemory),
             environmentVariables: variables)
     }
@@ -53,7 +51,6 @@ struct ExtensionBootConfig: Sendable {
                     "homedir": homeDirectory,
                     "tmpdir": temporaryDirectory,
                     "cwd": workingDirectory,
-                    "cpus": cpuCount,
                     "totalmem": totalMemory,
                     "env": environmentVariables,
                     "execPath": ""
@@ -74,8 +71,10 @@ struct ExtensionLaunchContext: Sendable {
     var caches: [String: [String: String]]
     var arguments: [String: String]
     var fallbackText: String?
+    var launchType: ExtensionLaunchType = .userInitiated
     /// Injected, never read: a running command keeps what it booted with.
     var isDarkAppearance: Bool
+    var launchContext: [String: RenderValue] = [:]
 
     func jsonString() -> String {
         var environment: [String: Any] = [
@@ -89,13 +88,14 @@ struct ExtensionLaunchContext: Sendable {
             "raycastVersion": ExtensionRuntimeVersion.raycastAPI,
             "textSize": "medium",
             "appearance": isDarkAppearance ? "dark" : "light",
-            "launchType": "userInitiated",
+            "launchType": launchType.rawValue,
             "canAccess": false
         ]
         environment["ownerOrAuthorName"] = extensionTitle
 
-        var launchProps: [String: Any] = ["launchType": "userInitiated", "arguments": arguments]
+        var launchProps: [String: Any] = ["launchType": launchType.rawValue, "arguments": arguments]
         if let fallbackText { launchProps["fallbackText"] = fallbackText }
+        if !launchContext.isEmpty { launchProps["launchContext"] = launchContext.mapValues(\.jsonValue) }
 
         return ExtensionRuntime.jsonString(
             from: [

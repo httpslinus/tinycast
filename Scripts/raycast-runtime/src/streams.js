@@ -80,6 +80,7 @@ export class Readable extends Stream {
       else if (!(chunk instanceof Buffer)) chunk = Buffer.from(chunk);
       if (state.encoding) chunk = chunk.toString(state.encoding);
     }
+    if (!sizeOf(chunk, state.objectMode)) return true;
     state.buffer.push(chunk);
     state.length += sizeOf(chunk, state.objectMode);
     this._schedule();
@@ -219,6 +220,8 @@ export class Readable extends Stream {
 }
 
 Readable.from = (iterable, options) => {
+  // Node reads a string or a Buffer as one chunk; iterating it yields characters or bare byte numbers.
+  if (typeof iterable === "string" || iterable instanceof Uint8Array) iterable = [iterable];
   const iterator = iterable[Symbol.asyncIterator]?.() ?? iterable[Symbol.iterator]();
   return new Readable({
     objectMode: true,

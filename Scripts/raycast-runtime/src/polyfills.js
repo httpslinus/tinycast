@@ -71,6 +71,29 @@ if (!g.queueMicrotask) {
   };
 }
 
+// ─── WebAssembly ────────────────────────────────────────────────────
+// JSC settles the promise forms on a run loop the JS queue never spins; constructors don't wait.
+
+if (g.WebAssembly) {
+  const { Module, Instance } = g.WebAssembly;
+  const compile = (bytes) => new Promise((resolve) => resolve(new Module(bytes)));
+  const instantiate = (source, imports) =>
+    new Promise((resolve) => {
+      if (source instanceof Module) {
+        resolve(new Instance(source, imports));
+        return;
+      }
+      const module = new Module(source);
+      resolve({ module, instance: new Instance(module, imports) });
+    });
+  const bytesOf = async (source) => new Uint8Array(await (await source).arrayBuffer());
+  g.WebAssembly.compile = compile;
+  g.WebAssembly.instantiate = instantiate;
+  g.WebAssembly.compileStreaming = async (source) => compile(await bytesOf(source));
+  g.WebAssembly.instantiateStreaming = async (source, imports) =>
+    instantiate(await bytesOf(source), imports);
+}
+
 // ─── Error reporting ────────────────────────────────────────────────
 
 let uncaughtSink = (error) => log("error", ["Uncaught:", error]);
@@ -145,6 +168,147 @@ class TinycastHeaders {
 
 const EMPTY_BYTES = new Uint8Array(0);
 
+class TinycastBlob {
+  constructor(parts = [], options = {}) {
+    this._bytes = concatBytes((parts ?? []).map(blobPartToBytes));
+    const type = String(options?.type ?? "");
+    this._type = /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : "";
+  }
+  get size() {
+    return this._bytes.length;
+  }
+  get type() {
+    return this._type;
+  }
+  async arrayBuffer() {
+    return this._bytes.slice().buffer;
+  }
+  async bytes() {
+    return this._bytes.slice();
+  }
+  async text() {
+    return utf8Decode(this._bytes);
+  }
+  stream() {
+    return readableStreamOfBytes(this._bytes);
+  }
+  slice(start = 0, end = this.size, contentType = "") {
+    const from = normalizeBlobIndex(start, this.size);
+    const to = normalizeBlobIndex(end, this.size);
+    return new TinycastBlob([this._bytes.subarray(Math.min(from, to), to)], { type: contentType });
+  }
+}
+
+function blobPartToBytes(part) {
+  if (part instanceof TinycastBlob) return part._bytes;
+  if (typeof part === "string") return utf8Encode(part);
+  if (part instanceof ArrayBuffer) return new Uint8Array(part);
+  if (ArrayBuffer.isView(part)) return new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
+  return utf8Encode(String(part));
+}
+
+function concatBytes(chunks) {
+  const bytes = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
+}
+
+function normalizeBlobIndex(value, size) {
+  const index = Number(value);
+  if (Number.isNaN(index)) return 0;
+  if (index === Infinity) return size;
+  if (index === -Infinity) return 0;
+  return Math.min(Math.max(index < 0 ? size + Math.ceil(index) : Math.floor(index), 0), size);
+}
+
+class TinycastFile extends TinycastBlob {
+  constructor(parts = [], name = "", options = {}) {
+    super(parts, options);
+    this.name = String(name);
+    this.lastModified = options?.lastModified ?? Date.now();
+  }
+}
+
+class TinycastFormData {
+  constructor() {
+    this._entries = [];
+    // Header and body must carry the same boundary, so it lives on the instance, not the encoder.
+    this._boundary = `----TinycastFormBoundary${Math.random().toString(36).slice(2, 18)}`;
+  }
+  append(name, value, filename) {
+    this._entries.push([String(name), formDataValue(value, filename)]);
+  }
+  set(name, value, filename) {
+    const key = String(name);
+    const at = this._entries.findIndex(([existing]) => existing === key);
+    this._entries = this._entries.filter(([existing]) => existing !== key);
+    this._entries.splice(at === -1 ? this._entries.length : at, 0, [key, formDataValue(value, filename)]);
+  }
+  get(name) {
+    const hit = this._entries.find(([existing]) => existing === String(name));
+    return hit === undefined ? null : hit[1];
+  }
+  getAll(name) {
+    return this._entries.filter(([existing]) => existing === String(name)).map(([, value]) => value);
+  }
+  has(name) {
+    return this._entries.some(([existing]) => existing === String(name));
+  }
+  delete(name) {
+    this._entries = this._entries.filter(([existing]) => existing !== String(name));
+  }
+  forEach(fn, thisArg) {
+    for (const [name, value] of this._entries) fn.call(thisArg, value, name, this);
+  }
+  keys() {
+    return this._entries.map(([name]) => name)[Symbol.iterator]();
+  }
+  values() {
+    return this._entries.map(([, value]) => value)[Symbol.iterator]();
+  }
+  entries() {
+    return this._entries.map(([name, value]) => [name, value])[Symbol.iterator]();
+  }
+  [Symbol.iterator]() {
+    return this.entries();
+  }
+}
+
+// A Blob entry becomes a File named "blob" unless the caller passed a filename, per the spec.
+function formDataValue(value, filename) {
+  if (!(value instanceof TinycastBlob)) return String(value);
+  if (value instanceof TinycastFile && filename === undefined) return value;
+  return new TinycastFile([value], filename ?? "blob", { type: value.type });
+}
+
+function formDataToBytes(form) {
+  const chunks = [];
+  for (const [name, value] of form._entries) {
+    const disposition =
+      value instanceof TinycastBlob
+        ? `; name="${escapeFormName(name)}"; filename="${escapeFormName(value.name)}"`
+        : `; name="${escapeFormName(name)}"`;
+    const type = value instanceof TinycastBlob ? `Content-Type: ${value.type || "application/octet-stream"}\r\n` : "";
+    chunks.push(utf8Encode(`--${form._boundary}\r\nContent-Disposition: form-data${disposition}\r\n${type}\r\n`));
+    chunks.push(value instanceof TinycastBlob ? value._bytes : utf8Encode(value));
+    chunks.push(utf8Encode("\r\n"));
+  }
+  chunks.push(utf8Encode(`--${form._boundary}--\r\n`));
+  return concatBytes(chunks);
+}
+
+function escapeFormName(value) {
+  return String(value).replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/"/g, "%22");
+}
+
+if (!g.Blob) g.Blob = TinycastBlob;
+if (!g.File) g.File = TinycastFile;
+if (!g.FormData) g.FormData = TinycastFormData;
+
 class TinycastResponse {
   // Spec shape: axios and friends construct a Response at module scope to probe the platform.
   constructor(body = null, init = {}, url = "") {
@@ -190,7 +354,7 @@ class TinycastResponse {
     return JSON.parse(await this.text());
   }
   async blob() {
-    throw new Error("Response.blob() is not supported in Tinycast extensions.");
+    return new TinycastBlob([await this.bytes()], { type: this.headers.get("content-type") ?? "" });
   }
 }
 
@@ -207,6 +371,8 @@ class TinycastRequest {
       this.headers = new TinycastHeaders(init.headers);
       this.body = init.body;
     }
+    const implied = bodyContentType(this.body);
+    if (implied && !this.headers.has("content-type")) this.headers.set("content-type", implied);
     this.signal = init.signal;
   }
 }
@@ -232,6 +398,16 @@ async function tinycastFetch(input, init = {}) {
   );
 }
 
+// gaxios builds every error with `instanceof DOMException`, so a non-2xx response threw without it.
+class TinycastDOMException extends Error {
+  constructor(message = "", name = "Error") {
+    super(String(message));
+    this.name = String(name);
+  }
+}
+
+if (!g.DOMException) g.DOMException = TinycastDOMException;
+
 function abortError() {
   const error = new Error("The operation was aborted.");
   error.name = "AbortError";
@@ -248,11 +424,22 @@ function timeoutError() {
 function bodyToBytes(body) {
   if (body === undefined || body === null) return null;
   if (typeof body === "string") return utf8Encode(body);
+  if (body instanceof TinycastBlob) return body._bytes;
+  if (body instanceof TinycastFormData) return formDataToBytes(body);
   if (body instanceof Uint8Array) return body;
   if (body instanceof ArrayBuffer) return new Uint8Array(body);
   if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
   if (body instanceof URLSearchParams) return utf8Encode(body.toString());
   return utf8Encode(String(body));
+}
+
+// Fetch spec: a body implies a Content-Type, which an OAuth token POST relies on rather than sets.
+function bodyContentType(body) {
+  if (typeof body === "string") return "text/plain;charset=UTF-8";
+  if (body instanceof URLSearchParams) return "application/x-www-form-urlencoded;charset=UTF-8";
+  if (body instanceof TinycastFormData) return `multipart/form-data; boundary=${body._boundary}`;
+  if (body instanceof TinycastBlob) return body.type || null;
+  return null;
 }
 
 function encodeBody(body) {
@@ -276,12 +463,17 @@ if (!g.fetch) {
 // ─── AbortController ────────────────────────────────────────────────
 
 if (!g.AbortController) {
-  class AbortSignalShim {
+  // node-fetch brand-checks a signal by constructor name and by tag before it will send.
+  class AbortSignal {
+    static name = "AbortSignal";
     constructor() {
       this.aborted = false;
       this.reason = undefined;
       this._listeners = new Set();
       this.onabort = null;
+    }
+    get [Symbol.toStringTag]() {
+      return "AbortSignal";
     }
     addEventListener(type, listener) {
       if (type === "abort") this._listeners.add(listener);
@@ -295,17 +487,17 @@ if (!g.AbortController) {
     // The statics, not just the instance shape: a signal missing them still reads as supported at
     // the type level, so an extension calls `AbortSignal.timeout` and gets "is not a function".
     static abort(reason) {
-      const signal = new AbortSignalShim();
+      const signal = new AbortSignal();
       signal._fire(reason);
       return signal;
     }
     static timeout(ms) {
-      const signal = new AbortSignalShim();
+      const signal = new AbortSignal();
       setTimeout(() => signal._fire(timeoutError()), ms);
       return signal;
     }
     static any(signals) {
-      const merged = new AbortSignalShim();
+      const merged = new AbortSignal();
       for (const source of signals) {
         if (source?.aborted) {
           merged._fire(source.reason);
@@ -330,15 +522,164 @@ if (!g.AbortController) {
       }
     }
   }
-  g.AbortSignal = AbortSignalShim;
+  g.AbortSignal = AbortSignal;
   g.AbortController = class {
     constructor() {
-      this.signal = new AbortSignalShim();
+      this.signal = new AbortSignal();
     }
     abort(reason) {
       this.signal._fire(reason);
     }
   };
+}
+
+// ─── Event / EventTarget / MessageChannel ───────────────────────────
+// WebCore APIs, like TextEncoder: undici extends Event and EventTarget at module scope.
+
+class TinycastEvent {
+  constructor(type, init = {}) {
+    if (arguments.length === 0) throw new TypeError("Event constructor requires a type argument.");
+    this.type = String(type);
+    this.bubbles = !!init.bubbles;
+    this.cancelable = !!init.cancelable;
+    this.composed = !!init.composed;
+    this.defaultPrevented = false;
+    this.isTrusted = false;
+    this.target = null;
+    this.currentTarget = null;
+    this.eventPhase = 0;
+    this.timeStamp = Date.now();
+    this._stopped = false;
+  }
+  preventDefault() {
+    if (this.cancelable) this.defaultPrevented = true;
+  }
+  stopPropagation() {}
+  stopImmediatePropagation() {
+    this._stopped = true;
+  }
+}
+
+// A WeakMap rather than a field: subclasses and `Object.create` instances never run our constructor.
+const eventListeners = new WeakMap();
+
+function listenersOf(target, type) {
+  let byType = eventListeners.get(target);
+  if (!byType) eventListeners.set(target, (byType = new Map()));
+  let list = byType.get(type);
+  if (!list) byType.set(type, (list = []));
+  return list;
+}
+
+class TinycastEventTarget {
+  addEventListener(type, callback, options) {
+    if (callback == null) return;
+    const { capture = false, once = false, signal } = typeof options === "boolean" ? { capture: options } : (options ?? {});
+    if (signal?.aborted) return;
+    const list = listenersOf(this, String(type));
+    if (list.some((each) => each.callback === callback && each.capture === !!capture)) return;
+    list.push({ callback, capture: !!capture, once: !!once, removed: false });
+    signal?.addEventListener("abort", () => this.removeEventListener(type, callback, { capture }));
+  }
+  removeEventListener(type, callback, options) {
+    const capture = !!(typeof options === "boolean" ? options : options?.capture);
+    const list = eventListeners.get(this)?.get(String(type));
+    const index = list?.findIndex((each) => each.callback === callback && each.capture === capture) ?? -1;
+    if (index === -1) return;
+    list[index].removed = true;
+    list.splice(index, 1);
+  }
+  dispatchEvent(event) {
+    if (!(event instanceof TinycastEvent)) throw new TypeError("dispatchEvent requires an Event.");
+    event.target = this;
+    event.currentTarget = this;
+    event.eventPhase = 2;
+    for (const listener of [...(eventListeners.get(this)?.get(event.type) ?? [])]) {
+      if (listener.removed) continue;
+      if (listener.once) this.removeEventListener(event.type, listener.callback, { capture: listener.capture });
+      try {
+        if (typeof listener.callback === "function") listener.callback.call(this, event);
+        else listener.callback.handleEvent?.(event);
+      } catch (error) {
+        reportUncaught(error);
+      }
+      if (event._stopped) break;
+    }
+    event.currentTarget = null;
+    event.eventPhase = 0;
+    return !event.defaultPrevented;
+  }
+}
+
+class TinycastMessageEvent extends TinycastEvent {
+  constructor(data) {
+    super("message");
+    this.data = data;
+    this.ports = [];
+  }
+}
+
+// Node's port starts on its first "message" listener, not only on `start()` as a browser's does.
+class TinycastMessagePort extends TinycastEventTarget {
+  _peer = null;
+  _queue = [];
+  _started = false;
+  _closed = false;
+  _onmessage = null;
+  postMessage(message) {
+    if (!this._peer) return;
+    this._peer._receive(g.structuredClone(message));
+  }
+  start() {
+    if (this._started || this._closed) return;
+    this._started = true;
+    for (const data of this._queue.splice(0)) this._schedule(data);
+  }
+  close() {
+    this._closed = true;
+    if (this._peer) this._peer._peer = null;
+    this._peer = null;
+    this._queue = [];
+  }
+  addEventListener(type, callback, options) {
+    super.addEventListener(type, callback, options);
+    if (type === "message") this.start();
+  }
+  get onmessage() {
+    return this._onmessage;
+  }
+  set onmessage(handler) {
+    if (this._onmessage) this.removeEventListener("message", this._onmessage);
+    this._onmessage = typeof handler === "function" ? handler : null;
+    if (this._onmessage) this.addEventListener("message", this._onmessage);
+  }
+  _receive(data) {
+    if (this._started) this._schedule(data);
+    else this._queue.push(data);
+  }
+  _schedule(data) {
+    setTimeout(() => {
+      if (!this._closed) this.dispatchEvent(new TinycastMessageEvent(data));
+    }, 0);
+  }
+}
+
+class TinycastMessageChannel {
+  constructor() {
+    this.port1 = new TinycastMessagePort();
+    this.port2 = new TinycastMessagePort();
+    this.port1._peer = this.port2;
+    this.port2._peer = this.port1;
+  }
+}
+
+if (!g.EventTarget) {
+  g.Event = TinycastEvent;
+  g.EventTarget = TinycastEventTarget;
+}
+if (!g.MessageChannel) {
+  g.MessagePort = TinycastMessagePort;
+  g.MessageChannel = TinycastMessageChannel;
 }
 
 // ─── Text encoding / base64 ─────────────────────────────────────────

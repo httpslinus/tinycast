@@ -71,7 +71,29 @@ final class ExtensionCoordinator {
         guard settings.extensionsEnabled,
             let entry = extensions.launcherEntry(forEntryID: entryID)
         else { return }
+        // The shortcut's second press closes its command, as a mode command's does.
+        if paletteCoordinator.isShowing(.extensionCommand),
+            extensions.running == ExtensionCommandRef(entryID: entryID)
+        {
+            paletteCoordinator.hidePalette()
+            return
+        }
         runExtensionCommand(entry)
+    }
+
+    /// A `raycast://extensions/…` link: the same command the launcher would run, by slug.
+    func runDeepLink(_ link: ExtensionDeepLink) {
+        guard settings.extensionsEnabled else {
+            core.showMessage("Extensions are disabled — enable them in Settings", tone: .danger)
+            return
+        }
+        guard let (owner, command) = extensions.resolve(link) else {
+            core.showMessage("No installed extension provides '\(link.commandName)'", tone: .danger)
+            return
+        }
+        run(
+            owner, command: command, arguments: link.arguments, fallbackText: link.fallbackText,
+            launchType: link.launchType)
     }
 
     // MARK: - Managing one extension from the launcher
@@ -141,22 +163,48 @@ final class ExtensionCoordinator {
     }
 
     /// A view command takes over the palette; a no-view command closes it and runs headless.
-    func runExtensionCommand(_ app: AppEntry, arguments: [String: String] = [:]) {
+    func runExtensionCommand(
+        _ app: AppEntry, arguments: [String: String] = [:], fallbackText: String? = nil,
+        launchType: ExtensionLaunchType = .userInitiated,
+        launchContext: [String: RenderValue] = [:]
+    ) {
         guard let (owner, command) = extensions.resolve(app) else { return }
+        run(
+            owner, command: command, arguments: arguments, fallbackText: fallbackText,
+            launchType: launchType, launchContext: launchContext)
+    }
+
+    private func run(
+        _ owner: InstalledExtension, command: ExtensionCommand, arguments: [String: String],
+        fallbackText: String? = nil, launchType: ExtensionLaunchType = .userInitiated,
+        launchContext: [String: RenderValue] = [:]
+    ) {
         switch command.mode {
         case .view:
             // Switch the palette over first, so the launching state is what the user sees.
-            palette.prepare(mode: .extensionCommand)
+            paletteCoordinator.navigate(to: .extensionCommand)
             // A shortcut fires while hidden, where a view command has nowhere to render.
             if !paletteCoordinator.isVisible {
                 paletteCoordinator.showPalette(mode: .extensionCommand)
             }
-            Task { await extensions.run(owner, command: command, arguments: arguments) }
+            if let fallbackText, !fallbackText.isEmpty { palette.query = fallbackText }
         case .noView, .menuBar:
             // A no-view command's own HUD is the feedback, so the palette gets out of the way.
-            paletteCoordinator.hidePalette(restoreFocus: false)
-            Task { await extensions.run(owner, command: command, arguments: arguments) }
+            if launchType == .userInitiated { paletteCoordinator.hidePalette(restoreFocus: false) }
         }
+        Task {
+            await extensions.run(
+                owner, command: command, arguments: arguments, fallbackText: fallbackText,
+                launchType: launchType, launchContext: launchContext)
+        }
+    }
+
+    func menuBarIsEnabled(_ reference: ExtensionCommandRef) -> Bool {
+        extensions.menuBarIsEnabled(reference)
+    }
+
+    func setMenuBarEnabled(_ enabled: Bool, reference: ExtensionCommandRef) {
+        extensions.setMenuBarEnabled(enabled, reference: reference)
     }
 
     /// The arguments a row declares, or nil — what decides whether the header shows inline fields.
@@ -172,7 +220,7 @@ final class ExtensionCoordinator {
         Task {
             if await extensions.popNavigation() { return }
             await extensions.stop()
-            palette.prepare(mode: .launcher)
+            if !palette.pop() { paletteCoordinator.hidePalette() }
         }
     }
 
@@ -186,9 +234,8 @@ final class ExtensionCoordinator {
 
     func showExtensionSettings(for owner: InstalledExtension) {
         paletteCoordinator.hidePalette(restoreFocus: false)
-        settingsCoordinator.showSettings(tab: .extensions)
-        NotificationCenter.default.post(
-            name: .tinycastSelectExtension, object: owner.manifest.name)
+        settingsCoordinator.showSettings(
+            tab: .extensions, revealing: .row(.extensionsInstalled, owner.manifest.name))
     }
 
     // MARK: - Host callbacks, routed here so the manager never touches a window itself
@@ -234,9 +281,4 @@ final class ExtensionCoordinator {
             confirmRole: alert.isDestructive ? .destructive : .standard,
             dismissTitle: alert.dismissTitle)
     }
-}
-
-extension Notification.Name {
-    /// Carries an extension's name so the Settings pane can select it once shown.
-    static let tinycastSelectExtension = Notification.Name("tinycastSelectExtension")
 }

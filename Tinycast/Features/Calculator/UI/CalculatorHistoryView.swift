@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Past calculations, shaped like `ClipboardList`; both sides per row, so no preview pane.
 struct CalculatorHistoryList: View {
+    @Environment(\.metrics) private var metrics
     let results: [CalcHistoryEntry]
     let selectedID: CalcHistoryEntry.ID?
     /// Changes only when the list should scroll, so mouse selection never yanks the position.
@@ -70,7 +71,7 @@ struct CalculatorHistoryList: View {
                                 .contentShape(Rectangle())
                                 .onTapGesture(perform: onActivateCalc)
                                 .onRightClick(perform: onCalcActions)
-                                .padding(.bottom, Theme.Spacing.xs)
+                                .padding(.bottom, metrics.spacing.xs)
                                 .selectionFrame(calcSelected)
                         case .entry(let entry):
                             CalcHistoryRow(entry: entry, selected: entry.id == selectedID)
@@ -87,9 +88,9 @@ struct CalculatorHistoryList: View {
                         }
                     }
                 }
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.top, Theme.Spacing.xs)
-                .padding(.bottom, Theme.Spacing.md)
+                .padding(.horizontal, metrics.spacing.md)
+                .padding(.top, metrics.spacing.xs)
+                .padding(.bottom, metrics.spacing.md)
                 .hideNativeScrollers()
                 .scrollOriginAnchor()
             }
@@ -103,9 +104,14 @@ struct CalculatorHistoryList: View {
 }
 
 private struct CalcHistoryRow: View {
+
+    @Environment(\.metrics) private var metrics
+    @Environment(AppCore.self) private var core
     let entry: CalcHistoryEntry
     let selected: Bool
     @State private var hovered = false
+
+    private var format: CalcNumberFormat { core.calcNumberFormat }
 
     private var fill: Color {
         if selected { return Theme.Colors.selection }
@@ -114,30 +120,24 @@ private struct CalcHistoryRow: View {
     }
 
     var body: some View {
-        HStack(spacing: Theme.Spacing.lg) {
-            RoundedRectangle(cornerRadius: Theme.Radius.thumbnail, style: .continuous)
-                .fill(Theme.Colors.controlSurface)
-                .frame(width: Theme.Size.rowIcon, height: Theme.Size.rowIcon)
-                .overlay(
-                    Image(systemName: "plus.forwardslash.minus")
-                        .font(.system(size: 12))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.secondary)
-                )
-            Text(entry.expression)
-                .font(Theme.Typography.rowTitle)
+        IconCache.observeStyle()
+        return HStack(spacing: metrics.spacing.lg) {
+            Image(nsImage: IconCache.symbolIcon(named: "plus.forwardslash.minus")).resizable()
+                .frame(width: metrics.size.resultRowIcon, height: metrics.size.resultRowIcon)
+            Text(format.localizedExpression(entry.expression))
+                .font(metrics.typography.rowTitle)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            Spacer(minLength: Theme.Spacing.xl)
-            Text(entry.result)
-                .font(Theme.Typography.rowTitle.weight(.semibold))
+            Spacer(minLength: metrics.spacing.xl)
+            Text(format.localized(entry.result))
+                .font(metrics.typography.rowTitle.weight(.semibold))
                 .lineLimit(1)
         }
-        .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.sm)
+        .padding(.horizontal, metrics.spacing.md)
+        .padding(.vertical, metrics.spacing.sm)
         .background(
-            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+            RoundedRectangle(cornerRadius: metrics.radius.row, style: .continuous)
                 .fill(fill)
         )
         .armedHover($hovered)

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // oxlint-disable no-unused-vars
-// Generate Tinycast/Features/Emoji/Model/EmojiData.generated.swift from Unicode + CLDR data.
+// Generate Tinycast/Features/Emoji/Model/EmojiData.generated.swift from Unicode + CLDR data, plus
+// one CLDR keyword pack per KEYWORD_LOCALES entry under Tinycast/Resources/EmojiKeywords/.
 //
-// Usage: node Scripts/gen-emoji.js [emoji-test.txt annotations.json annotationsDerived.json]
-// Downloads the sources when paths aren't given. Run once, commit the output.
+// Usage: node Scripts/gen-emoji.js [cache-dir]
+// Downloads every source; a cache dir is read first and keeps what was fetched. Commit the output.
 "use strict";
 
 const fs = require("fs");
@@ -12,17 +13,21 @@ const path = require("path");
 // Emoji added after this version may lack glyphs on the oldest supported macOS (26.0 ships Emoji 16.0).
 const MAX_EMOJI_VERSION = 17.0;
 
-const SOURCES = [
-  ["emoji-test.txt", "https://unicode.org/Public/emoji/latest/emoji-test.txt"],
-  [
-    "annotations.json",
-    "https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-annotations-full/annotations/en/annotations.json",
-  ],
-  [
-    "annotationsDerived.json",
-    "https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-annotations-derived-full/annotationsDerived/en/annotations.json",
-  ],
-];
+const EMOJI_TEST_URL = "https://unicode.org/Public/emoji/latest/emoji-test.txt";
+const CLDR_URL = "https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json";
+
+// Widely used languages: CLDR locale → the pack name `Bundle.preferredLocalizations` matches.
+const KEYWORD_LOCALES = {
+  de: "de",
+  es: "es",
+  fr: "fr",
+  ja: "ja",
+  ko: "ko",
+  pt: "pt",
+  ru: "ru",
+  zh: "zh-Hans",
+  "zh-Hant": "zh-Hant",
+};
 
 const GROUP_TO_CATEGORY = {
   "Smileys & Emotion": "sp",
@@ -37,7 +42,6 @@ const GROUP_TO_CATEGORY = {
 };
 
 const VS16 = 0xfe0f;
-const MAX_KEYWORDS = 8;
 const isToneScalar = (s) => s >= 0x1f3fb && s <= 0x1f3ff;
 
 // Curated text symbols: [glyph, name, keywords]. Names lowercase like the emoji dataset.
@@ -188,6 +192,19 @@ const SHAPES = [
   ["№", "numero sign", "number"],
   ["¡", "inverted exclamation mark", "spanish punctuation"],
   ["¿", "inverted question mark", "spanish punctuation"],
+  ["◉", "fisheye", "bullseye target circle dot"],
+  ["◎", "bullseye", "target circle ring"],
+  ["#", "number sign", "hash pound sharp"],
+  ["*", "asterisk", "star multiply wildcard"],
+  ["@", "at sign", "at arobase email"],
+  ["&", "ampersand", "and"],
+  ["%", "percent sign", "percent modulo"],
+  ["⁉", "exclamation question mark", "interrobang surprise"],
+  ["‼", "double exclamation mark", "bang emphasis"],
+  ["℗", "sound recording copyright", "phonogram copyright publishing"],
+  ["℠", "service mark", "servicemark trademark"],
+  ["ª", "feminine ordinal indicator", "feminine ordinal spanish"],
+  ["º", "masculine ordinal indicator", "masculine ordinal spanish portuguese"],
 ];
 // Everyday CJK punctuation — not Unicode emoji, so the upstream data never carries it.
 const CJK = [
@@ -238,32 +255,74 @@ const CJK = [
   ["﹃", "vertical left white corner bracket", "tategaki quote open"],
   ["﹄", "vertical right white corner bracket", "tategaki quote close"],
 ];
+// Mac keyboard keys and everyday technicals, all listed by the macOS character viewer.
+//  is Apple private-use (U+F8FF), so it never appears in Unicode data and is curated here.
+const KEYS = [
+  ["⌘", "command key", "cmd looped square place of interest"],
+  ["⌥", "option key", "opt alt"],
+  ["⌃", "control key", "ctrl caret up arrowhead"],
+  ["⎋", "escape key", "esc"],
+  ["⏎", "return key", "enter newline carriage"],
+  ["⌤", "enter key", "enter numpad"],
+  ["⌫", "delete key", "backspace erase backward"],
+  ["⌦", "forward delete key", "delete forward fn"],
+  ["⇥", "tab key", "tab right"],
+  ["⇤", "backtab key", "shift tab left"],
+  ["⇱", "home key", "home corner"],
+  ["⇲", "end key", "end corner"],
+  ["⇞", "page up key", "pgup page up"],
+  ["⇟", "page down key", "pgdn page down"],
+  ["⏏", "eject key", "eject media disk"],
+  ["⌧", "clear key", "clear numpad"],
+  ["⎙", "print screen key", "print screen sysrq"],
+  ["␣", "space symbol", "space blank open box"],
+  ["⌀", "diameter sign", "diameter engineering average"],
+  ["⌂", "house", "home house"],
+  ["⌨", "keyboard", "keyboard"],
+  ["⚙", "gear", "settings cog preferences"],
+  ["", "apple logo", "apple logo private"],
+];
 const SYMBOL_SECTIONS = [
   ["xa", ARROWS],
   ["xc", CURRENCY],
   ["xm", MATH],
   ["xs", SHAPES],
   ["xj", CJK],
+  ["xk", KEYS],
 ];
 
 const LINE_RE =
   /^([0-9A-F ]+?)\s*;\s*fully-qualified\s*#\s*(\S+)\s+E(\d+\.\d+)\s+(.*)$/;
 
-async function load(paths) {
-  const texts = [];
-  for (let i = 0; i < SOURCES.length; i++) {
-    const [, url] = SOURCES[i];
-    const given = paths[i];
-    if (given) {
-      texts.push(fs.readFileSync(given, "utf-8"));
-    } else {
-      console.log(`fetching ${url}`);
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`fetch ${url} failed: ${res.status}`);
-      texts.push(await res.text());
-    }
-  }
-  return texts;
+async function source(name, url, cacheDir) {
+  const cached = cacheDir && path.join(cacheDir, name);
+  if (cached && fs.existsSync(cached)) return fs.readFileSync(cached, "utf-8");
+  console.log(`fetching ${url}`);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`fetch ${url} failed: ${res.status}`);
+  const text = await res.text();
+  if (cached) fs.writeFileSync(cached, text);
+  return text;
+}
+
+// One locale's `{default, tts}` by glyph; hand-written annotations win over derived ones.
+async function annotationsFor(locale, cacheDir) {
+  const [full, derived] = await Promise.all([
+    source(
+      `annotations-${locale}.json`,
+      `${CLDR_URL}/cldr-annotations-full/annotations/${locale}/annotations.json`,
+      cacheDir,
+    ),
+    source(
+      `annotationsDerived-${locale}.json`,
+      `${CLDR_URL}/cldr-annotations-derived-full/annotationsDerived/${locale}/annotations.json`,
+      cacheDir,
+    ),
+  ]);
+  return {
+    ...JSON.parse(derived).annotationsDerived.annotations,
+    ...JSON.parse(full).annotations.annotations,
+  };
 }
 
 // Iterate a glyph's Unicode scalars (code points), matching Python's per-code-point view.
@@ -276,32 +335,68 @@ function baseKey(scalars) {
 }
 
 function cleanField(s) {
-  return s.replaceAll("|", " ").replaceAll(",", " ").trim();
+  return s.replaceAll("|", " ").replaceAll(",", " ").replace(/\s+/g, " ").trim();
+}
+
+// CLDR keys most emoji without VS16, so a fully-qualified glyph falls back to its bare form.
+function annotationOf(glyph, annotations) {
+  const annotation = annotations[glyph];
+  if (annotation?.default?.length) return annotation;
+  return annotations[glyph.replaceAll("\u{FE0F}", "")];
 }
 
 function keywordsFor(glyph, name, annotations) {
-  let words = annotations[glyph];
-  if (!words || words.length === 0)
-    words = annotations[glyph.replaceAll("️", "")];
-  if (!words) words = [];
+  const words = annotationOf(glyph, annotations)?.default ?? [];
   const nameWords = new Set(name.toLowerCase().split(/\s+/).filter(Boolean));
   const out = [];
   for (let w of words) {
     w = cleanField(w.toLowerCase());
     if (w && !nameWords.has(w) && !out.includes(w)) out.push(w);
   }
-  return out.slice(0, MAX_KEYWORDS);
+  return out;
+}
+
+// A Japanese IME shows hiragana until the user converts, so katakana terms gain a hiragana twin.
+function hiraganaOf(term) {
+  return Array.from(term, (c) => {
+    const s = c.codePointAt(0);
+    return s >= 0x30a1 && s <= 0x30f6 ? String.fromCodePoint(s - 0x60) : c;
+  }).join("");
+}
+
+// Search-only terms, never displayed, so the typographic apostrophe folds to the one keyboards type.
+function localizedTermsFor(glyph, english, annotations) {
+  const annotation = annotationOf(glyph, annotations);
+  const out = [];
+  for (const raw of [...(annotation?.tts ?? []), ...(annotation?.default ?? [])]) {
+    const term = cleanField(raw.toLowerCase().replaceAll("’", "'"));
+    for (const t of new Set([term, hiraganaOf(term)])) {
+      if (t && !english.has(t) && !out.includes(t)) out.push(t);
+    }
+  }
+  return out;
+}
+
+// `glyph|terms` for every catalog glyph CLDR names in the locale, minus what English already says.
+function keywordPack(records, annotations) {
+  const pack = [];
+  for (const [glyph, name, , , keywords] of records) {
+    const english = new Set([name, ...name.split(" "), ...keywords.split(",")]);
+    const terms = localizedTermsFor(glyph, english, annotations);
+    if (terms.length > 0) pack.push(`${glyph}|${terms.join(",")}`);
+  }
+  return pack;
 }
 
 async function main() {
-  const [emojiTest, annJson, derivedJson] = await load(
-    process.argv.slice(2, 5),
-  );
-  const ann = JSON.parse(annJson).annotations.annotations;
-  const derived = JSON.parse(derivedJson).annotationsDerived.annotations;
-  const merged = { ...derived, ...ann };
-  const annotations = {};
-  for (const g of Object.keys(merged)) annotations[g] = merged[g].default || [];
+  const cacheDir = process.argv[2];
+  if (cacheDir) fs.mkdirSync(cacheDir, { recursive: true });
+  const locales = Object.keys(KEYWORD_LOCALES);
+  const [emojiTest, annotations, ...localized] = await Promise.all([
+    source("emoji-test.txt", EMOJI_TEST_URL, cacheDir),
+    annotationsFor("en", cacheDir),
+    ...locales.map((locale) => annotationsFor(locale, cacheDir)),
+  ]);
 
   let group = null;
   const entries = []; // [glyph, name, category, scalars]
@@ -333,7 +428,7 @@ async function main() {
       cleanField(name.toLowerCase()),
       category,
       toneCapable ? "1" : "0",
-      keywords.join(" "),
+      keywords.join(","),
     ]);
   }
   for (const [category, table] of SYMBOL_SECTIONS) {
@@ -343,7 +438,7 @@ async function main() {
         cleanField(name),
         category,
         "0",
-        cleanField(keywords),
+        keywords.split(/\s+/).filter(Boolean).join(","),
       ]);
     }
   }
@@ -378,6 +473,18 @@ async function main() {
       "}\n",
   );
   console.log(`wrote ${out} (${records.length} records)`);
+
+  const packDir = path.resolve(__dirname, "..", "Tinycast/Resources/EmojiKeywords");
+  fs.rmSync(packDir, { recursive: true, force: true });
+  fs.mkdirSync(packDir, { recursive: true });
+  locales.forEach((locale, i) => {
+    const pack = keywordPack(lines, localized[i]);
+    if (pack.length <= 1500)
+      throw new Error(`suspiciously few ${locale} keywords: ${pack.length}`);
+    const file = path.join(packDir, `${KEYWORD_LOCALES[locale]}.txt`);
+    fs.writeFileSync(file, `${pack.join("\n")}\n`);
+  });
+  console.log(`wrote ${packDir} (${locales.length} keyword packs)`);
 }
 
 main().catch((e) => {

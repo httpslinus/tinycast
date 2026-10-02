@@ -46,6 +46,8 @@ struct AppearanceTests {
 
         print("# dark branches are the shipped literals")
         dark("panelScrim", c.panelScrim, is: Color.black.opacity(0.4))
+        dark("dialogDimming", c.dialogDimming, is: Color.black.opacity(0.34))
+        dark("tooltipShadow", c.tooltipShadow, is: Color.black.opacity(0.18))
         dark("selection", c.selection, is: Color.white.opacity(0.10))
         dark("rowHover", c.rowHover, is: Color.white.opacity(0.05))
         dark("menuHover", c.menuHover, is: Color.white.opacity(0.10))
@@ -57,7 +59,6 @@ struct AppearanceTests {
         dark("noteText", c.noteText, is: Color.white.opacity(0.90))
         dark("cardFill", c.cardFill, is: Color.white.opacity(0.05))
         dark("cardStroke", c.cardStroke, is: Color.white.opacity(0.10))
-        dark("glassFrost", c.glassFrost, is: Color.white.opacity(0.05))
         dark("dropGuide", c.dropGuide, is: Color.white.opacity(0.35))
         dark("brand", c.brand, is: Color(red: 0.525, green: 0.231, blue: 1.0))
 
@@ -65,7 +66,7 @@ struct AppearanceTests {
         dark("iconPlaceholder", c.iconPlaceholder, is: Color.white.opacity(0.06))
         dark("sheen", c.sheen, is: Color.white.opacity(0.04))
         dark("textPrimary", c.textPrimary, is: Color.white)
-        // VolumeSlider drew white 0.85; textPrimary is alpha 1, so `.opacity` has to reproduce it.
+        // VolumeHUDView draws white 0.85; textPrimary is alpha 1, so opacity must reproduce it.
         dark("textPrimary at 0.85", c.textPrimary.opacity(0.85), is: Color.white.opacity(0.85))
 
         print("# every surface token resolves per appearance")
@@ -75,7 +76,7 @@ struct AppearanceTests {
             ("controlSurface", c.controlSurface), ("border", c.border),
             ("textPrimary", c.textPrimary), ("textSecondary", c.textSecondary),
             ("textTertiary", c.textTertiary), ("noteText", c.noteText), ("cardFill", c.cardFill),
-            ("cardStroke", c.cardStroke), ("glassFrost", c.glassFrost), ("dropGuide", c.dropGuide),
+            ("cardStroke", c.cardStroke), ("dropGuide", c.dropGuide),
             ("iconPlaceholder", c.iconPlaceholder), ("sheen", c.sheen)
         ] {
             adapts(label, token)
@@ -84,8 +85,6 @@ struct AppearanceTests {
         print("# the scrim inverts rather than ramping: it lightens the light surface")
         check("light scrim is white", components(c.panelScrim, .aqua)[0] == 255)
         check("dark scrim is black", components(c.panelScrim, .darkAqua)[0] == 0)
-        // Frost brightens glass in both, so it is the one token that stays white either side.
-        check("frost stays white", components(c.glassFrost, .aqua)[0] == 255)
 
         print("# .system hands the choice back to AppKit")
         check("system is nil", AppAppearance.system.nsAppearance == nil)

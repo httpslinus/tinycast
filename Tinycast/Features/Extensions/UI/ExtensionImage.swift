@@ -175,26 +175,11 @@ enum ExtensionImage {
     ]
 
     private static func color(named raw: String) -> Color? {
-        // Extensions also pass raw hex.
-        palette[raw] ?? hexColor(raw)
-    }
-
-    private static func hexColor(_ raw: String) -> Color? {
-        var text = raw.trimmingCharacters(in: .whitespaces)
-        guard text.hasPrefix("#") else { return nil }
-        text.removeFirst()
-        if text.count == 3 {
-            text = text.map { "\($0)\($0)" }.joined()
-        }
-        guard text.count == 6 || text.count == 8, let value = UInt32(text, radix: 16) else {
-            return nil
-        }
-        let hasAlpha = text.count == 8
-        let red = Double((value >> (hasAlpha ? 24 : 16)) & 0xff) / 255
-        let green = Double((value >> (hasAlpha ? 16 : 8)) & 0xff) / 255
-        let blue = Double((value >> (hasAlpha ? 8 : 0)) & 0xff) / 255
-        let alpha = hasAlpha ? Double(value & 0xff) / 255 : 1
-        return Color(red: red, green: green, blue: blue, opacity: alpha)
+        // Extensions also pass raw CSS, in every notation `ColorValue` reads.
+        palette[raw]
+            ?? ColorValue.parse(raw).map {
+                Color(.sRGB, red: $0.red, green: $0.green, blue: $0.blue, opacity: $0.alpha)
+            }
     }
 
     /// SF only enumerates 0…50, so draw all hundred as glyphs and they look alike.
@@ -381,16 +366,26 @@ extension ExtensionImage {
 
 /// A resolved icon at row size; an unresolvable one draws the faint tile, so rows never jump.
 struct ExtensionIconView: View {
+    private enum MenuSymbolStyle {
+        static let size: CGFloat = 14
+        static let color = Theme.Colors.ramp(dark: 0.70, light: 0.70)
+    }
+
+    @Environment(\.metrics) private var metrics
     @Environment(\.isDarkAppearance) private var isDark
     let resolved: ExtensionImage.Resolved?
-    var size: CGFloat = Theme.Size.rowIcon
+    var size: CGFloat?
     /// Opt-in, and off for row icons: a playing GIF at 24pt is noise in a long list.
     var animates = false
+    var usesMenuSymbolStyle = false
     @State private var loaded: NSImage?
+
+    /// Row size unless a caller states one, which only the ⌘K panel's 20pt slot does.
+    private var side: CGFloat { size ?? metrics.size.rowIcon }
 
     var body: some View {
         content
-            .frame(width: size, height: size)
+            .frame(width: side, height: side)
             .clipShape(shape)
             // Keyed on appearance too: an inline SVG's palette resolves at decode.
             .task(id: ExtensionImage.LoadKey(source: resolved?.source, isDark: isDark)) {
@@ -403,14 +398,29 @@ struct ExtensionIconView: View {
         switch resolved?.source {
         case .symbol(let name):
             Image(systemName: name)
-                .font(.system(size: size * 0.62, weight: .regular))
-                .symbolRenderingMode(resolved?.tint == nil ? .hierarchical : .monochrome)
-                .foregroundStyle(resolved?.tint ?? Theme.Colors.textSecondary)
-                .frame(width: size, height: size)
+                .font(
+                    .system(
+                        size: usesMenuSymbolStyle
+                            ? metrics.scaled(MenuSymbolStyle.size)
+                            : side * 0.62,
+                        weight: usesMenuSymbolStyle ? .medium : .regular)
+                )
+                .symbolRenderingMode(
+                    usesMenuSymbolStyle
+                        ? .monochrome
+                        : (resolved?.tint == nil ? .hierarchical : .monochrome)
+                )
+                .foregroundStyle(
+                    resolved?.tint
+                        ?? (usesMenuSymbolStyle
+                            ? MenuSymbolStyle.color
+                            : Theme.Colors.textSecondary)
+                )
+                .frame(width: side, height: side)
         case .glyph(let text):
             Text(text)
-                .font(.system(size: size * 0.72))
-                .frame(width: size, height: size)
+                .font(.system(size: side * 0.72))
+                .frame(width: side, height: side)
         case .file, .fileIcon, .remote, .inline:
             if let loaded {
                 // Only a multi-frame image pays for `NSImageView`; a still stays on SwiftUI's path.
@@ -433,14 +443,14 @@ struct ExtensionIconView: View {
     }
 
     private var placeholder: some View {
-        RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+        RoundedRectangle(cornerRadius: metrics.radius.row, style: .continuous)
             .fill(Theme.Colors.iconPlaceholder)
     }
 
     private var shape: AnyShape {
         resolved?.isCircular == true
             ? AnyShape(Circle())
-            : AnyShape(RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+            : AnyShape(RoundedRectangle(cornerRadius: metrics.radius.row, style: .continuous))
     }
 
 }

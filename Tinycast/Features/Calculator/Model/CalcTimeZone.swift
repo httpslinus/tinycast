@@ -8,7 +8,10 @@ enum CalcTimeZone {
         }
         let echo = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         let query = echo.lowercased()
-        let (zoneQuery, offset) = splitOffset(query)
+        let (originalZoneQuery, offset) = splitOffset(query)
+        let zoneQuery = currentTimeQuery(
+            originalZoneQuery.split(whereSeparator: \.isWhitespace).map(String.init), home: calendar.timeZone)
+            ?? originalZoneQuery
         guard hasConnector(query) || query.first?.isNumber == true
             || ["noon ", "midnight ", "tomorrow ", "today ", "next "].contains(where: query.hasPrefix)
             || zoneQuery.hasSuffix(" time") || zoneQuery.hasPrefix("time ")
@@ -62,6 +65,29 @@ enum CalcTimeZone {
         }
 
         return result(source, target: target, isLocalTarget: isLocalTarget, echo: echo, now: now, calendar: calendar)
+    }
+
+    private static func currentTimeQuery(_ words: [String], home: TimeZone) -> String? {
+        if words.first == "time" || words.first == "timezone" {
+            var place = Array(words.dropFirst())
+            if words.first == "timezone", place.first == "in" { place.removeFirst() }
+            if zone(named: place, home: home) != nil { return "time in \(place.joined(separator: " "))" }
+        }
+
+        let destination = words.firstIndex(of: "to") ?? words.endIndex
+        var place = Array(words[..<destination])
+        if place.suffix(2) == ["time", "zone"] {
+            place.removeLast(2)
+        } else if place.last == "time" || place.last == "timezone" {
+            place.removeLast()
+        } else {
+            return nil
+        }
+        guard zone(named: place, home: home) != nil else { return nil }
+        guard destination < words.endIndex else { return "time in \(place.joined(separator: " "))" }
+        let target = Array(words[(destination + 1)...])
+        guard zone(named: target, home: home) != nil else { return nil }
+        return "time \(place.joined(separator: " ")) to \(target.joined(separator: " "))"
     }
 
     /// Splits a trailing `+ 2h` / `- 30 min` off the zone phrase it shifts.
@@ -239,6 +265,7 @@ enum CalcTimeZone {
         for suffix in ["am", "pm"] where text.hasSuffix(suffix) {
             meridiem = suffix
             text.removeLast(2)
+            break
         }
         let parts = text.split(separator: ":", omittingEmptySubsequences: false)
         guard (1...2).contains(parts.count), let first = parts.first, (1...2).contains(first.count),
@@ -269,7 +296,7 @@ enum CalcTimeZone {
         if phrase.hasSuffix(" time"), aliases[phrase] == nil { phrase.removeLast(5) }
         if let zone = fixedZone(phrase) { return zone }
         if let identifier = aliases[phrase] { return TimeZone(identifier: identifier) }
-        guard let identifier = cities[phrase] else { return nil }
+        guard let identifier = cities[phrase] ?? CountryZoneData.zones[phrase] else { return nil }
         return TimeZone(identifier: identifier)
     }
 
@@ -289,7 +316,7 @@ enum CalcTimeZone {
         "UTC": ["utc", "zulu"],
         "GMT": ["gmt"],
         "America/New_York": [
-            "est", "edt", "et", "eastern", "eastern time", "nyc", "new york city", "boston", "washington",
+            "est", "edt", "et", "usa", "eastern", "eastern time", "nyc", "new york city", "boston", "washington",
             "dc", "miami", "atlanta",
             "philadelphia", "jfk", "atl", "bos", "mia", "ewr", "iad", "charlotte", "nashville", "orlando",
             "tampa", "pittsburgh", "cleveland", "cincinnati", "columbus", "baltimore", "raleigh",
@@ -429,7 +456,7 @@ enum CalcTimeZone {
     }
 
     private static func clockString(_ date: Date, zone: TimeZone, calendar: Calendar) -> String {
-        CalcDateFormatters.clockString(from: date, calendar: calendar, zone: zone)
+        CalcDateFormatters.string(from: date, calendar: calendar, zone: zone, template: "jmm")
     }
 
     private static let localNames: Set<String> = ["local", "here", "my time", "local time", "my timezone", "my time zone"]

@@ -9,21 +9,23 @@ enum PaletteMode: String, CaseIterable, Identifiable {
     case emoji
     case keepass
     case fileSearch
+    case menuSearch
+    case switchWindows
+    case rooms
+    /// Choosing a room's windows and apps; the room was named on the Rooms screen.
+    case roomWindows
     case schedule
+    /// One meeting's read-only page, pushed from that meeting's own actions.
+    case meetingDetails
     case uninstall
     case quicklinks
     case snippets
-    /// Collects a quicklink's `{argument}` values; the request lives on the session.
-    case quicklinkArguments
-    /// Collects a custom command's positional arguments, likewise held on its own session.
-    case customCommandArguments
+    case dictionary
     /// A Raycast extension command rendering into the palette.
     case extensionCommand
 
     var id: String { rawValue }
 
-    /// One value at a time into the search field, so ↵ still acts with no rows to select.
-    var isArgumentForm: Bool { self == .quicklinkArguments || self == .customCommandArguments }
     var systemImage: String {
         switch self {
         case .launcher: return "magnifyingglass"
@@ -34,11 +36,16 @@ enum PaletteMode: String, CaseIterable, Identifiable {
         case .emoji: return "face.smiling"
         case .keepass: return "lock.shield"
         case .fileSearch: return "doc.text.magnifyingglass"
+        case .menuSearch: return "menubar.rectangle"
+        case .switchWindows: return "macwindow.on.rectangle"
+        case .rooms: return "door.left.hand.open"
+        case .roomWindows: return "macwindow.badge.plus"
         case .schedule: return "calendar"
+        case .meetingDetails: return "calendar"
         case .uninstall: return "trash"
-        case .quicklinks, .quicklinkArguments: return Quicklink.sfSymbol
-        case .customCommandArguments: return CustomCommand.sfSymbol
+        case .quicklinks: return Quicklink.sfSymbol
         case .snippets: return "curlybraces"
+        case .dictionary: return "book.closed"
         case .extensionCommand: return "puzzlepiece.extension"
         }
     }
@@ -52,12 +59,16 @@ enum PaletteMode: String, CaseIterable, Identifiable {
         case .emoji: return "Search emoji and symbols…"
         case .keepass: return "Search KeePass…"
         case .fileSearch: return "Search files and folders…"
+        case .menuSearch: return "Search menu bar items…"
+        case .switchWindows: return "Search open windows…"
+        case .rooms: return "Search rooms, or name a new one…"
+        case .roomWindows: return "Search windows, or type an app to add…"
         case .schedule: return "Search your schedule…"
+        case .meetingDetails: return "Meeting details"
         case .uninstall: return "Filter files and folders by name…"
         case .quicklinks: return "Search quicklinks…"
         case .snippets: return "Search snippets…"
-        // Replaced by the pending argument's name; only reached if the session vanished mid-render.
-        case .quicklinkArguments, .customCommandArguments: return "Enter a value…"
+        case .dictionary: return "Look up a word…"
         // Replaced by the command's own `searchBarPlaceholder` whenever it declares one.
         case .extensionCommand: return "Search…"
         }

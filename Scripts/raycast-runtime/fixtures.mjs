@@ -38,7 +38,7 @@ async function run(name, source, mode, verify, options) {
   harness.boot(bootConfig());
   const code = compile(source);
   harness.start("s1", code, "/fixtures/cmd.js", "/fixtures", mode, {});
-  await wait();
+  await wait(options?.settle);
   await verify(harness);
   harness.stop("s1");
 }
@@ -170,22 +170,82 @@ export default function Command() {
 const nodeSource = `
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs";
 import crypto from "node:crypto";
 import { Buffer } from "node:buffer";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Detail } from "@raycast/api";
 
 export default function Command() {
+  const errorCode = (fn) => {
+    try {
+      fn();
+      return "none";
+    } catch (error) {
+      return error.code ?? error.name;
+    }
+  };
+  const cpu = os.cpus()[0];
   const parts = [
     path.join("/a/b", "../c", "d.txt"),
     path.extname("x/y/file.tar.gz"),
     path.basename("/a/b/c.md", ".md"),
     os.platform(),
+    Object.keys(cpu.times).sort().join(","),
+    String(Object.values(cpu.times).every(Number.isFinite)),
+    String(os.freemem() > 0),
+    String(os.uptime() > 0),
+    String(os.loadavg().length === 3 && os.loadavg().every(Number.isFinite)),
     new URL("/next?q=1", "https://example.com/base/page").href,
     new URLSearchParams({ a: "1", b: "two words" }).toString(),
     crypto.createHash("sha256").update("abc").digest("hex").slice(0, 8),
     Buffer.from("hello").toString("base64"),
     Buffer.from("aGVsbG8=", "base64").toString("utf8"),
     new TextDecoder().decode(new TextEncoder().encode("héllo")),
+    fileURLToPath("file:///Applications/Tinycast%20Beta.app"),
+    fileURLToPath(new URL("file:///tmp/%ED%95%9C%EA%B8%80.txt")),
+    fileURLToPath("file://localhost/tmp/a?query=ignored#fragment"),
+    fileURLToPath("file:///tmp/a%5Cb"),
+    fileURLToPath("file:tmp/a"),
+    fileURLToPath("file:///tmp/%2e%2e/a"),
+    fileURLToPath("file://%6cocalhost/tmp/a"),
+    fileURLToPath("file:///tmp//a"),
+    fileURLToPath(new URL("file:///tmp/a///b")),
+    fileURLToPath("file:///tmp/a//../b"),
+    fileURLToPath("file:///C:/.."),
+    new URL(
+      "file:///tmp/a?query=" +
+        String.fromCharCode(92) +
+        "keep#fragment=" +
+        String.fromCharCode(92) +
+        "keep",
+    ).href,
+    new URL("https://example.com/C:/..").href,
+    fileURLToPath("file:///a:folder/.."),
+    new URL("..", "file:///a:folder/child").href,
+    new URL("..", "https://example.com/C:/child").href,
+    pathToFileURL("/tmp/My Image.png").href,
+    pathToFileURL("/tmp/a#b.png").href,
+    fileURLToPath(pathToFileURL("/tmp/a#b.png")),
+    fileURLToPath(pathToFileURL("/tmp/a?b.png")),
+    fileURLToPath(pathToFileURL("/Applications/Tinycast Beta.app")),
+    errorCode(() => fileURLToPath("file:///tmp/a%2Fb")),
+    errorCode(() => fileURLToPath("file://a%2Fb/tmp/a")),
+    errorCode(() => fileURLToPath("file://example.com/tmp/a")),
+    errorCode(() => fileURLToPath("https://example.com/a")),
+    errorCode(() => fileURLToPath({})),
+    errorCode(() => fileURLToPath("file://user@localhost/tmp/a")),
+    errorCode(() => fileURLToPath("file://localhost:/tmp/a")),
+    errorCode(() => fileURLToPath("file:///C:/a", { windows: true })),
+    // fs validates URL schemes the way Node does: a vscode-remote:// workspace URI whose stripped
+    // pathname exists locally ("/" always does) must not pass existsSync — Raycast's Search Recent
+    // Projects relies on that guard before handing the URI to fileURLToPath.
+    String(fs.existsSync(new URL("vscode-remote://ssh-remote%2Bucg/"))),
+    String(fs.existsSync(new URL("vscode-remote://ssh-remote%2Bserver/etc/docker/daemon.json"))),
+    String(fs.existsSync(new URL("file:///etc/hosts"))),
+    String(fs.existsSync("/etc/hosts")),
+    errorCode(() => fs.statSync(new URL("https://example.com/a"))),
+    errorCode(() => fs.readFileSync(new URL("https://example.com/a"))),
   ];
   return <Detail markdown={parts.join("\\n")} />;
 }
@@ -249,6 +309,10 @@ export default async function Command() {
     headers: { "Content-Type": "application/json" },
   });
   const clone = created.clone();
+  const abort = new DOMException("stopped", "AbortError");
+  const blob = new Blob(["hello", new Uint8Array([33])], { type: "Text/Plain" });
+  const slice = blob.slice(1, 4, "Application/Test");
+  const responseBlob = await new Response("hi", { headers: { "Content-Type": "text/custom" } }).blob();
   globalThis.__response = {
     probe: [probe.status, probe.ok, probe.statusText, await probe.text()],
     readers: ["text", "arrayBuffer", "blob"].every((name) => typeof probe[name] === "function"),
@@ -256,7 +320,60 @@ export default async function Command() {
     clone: [clone.status, clone.headers.get("content-type"), await clone.text()],
     bytes: Array.from(await new Response(new Uint8Array([104, 105])).bytes()),
     byteLength: (await new Response("héllo").arrayBuffer()).byteLength,
+    blob: [blob.size, blob.type, await blob.text(), Array.from(await blob.bytes()).join(",")],
+    slice: [slice.size, slice.type, await slice.text(), await new Response(blob).text()],
+    responseBlob: [responseBlob.size, responseBlob.type, await responseBlob.text()],
+    domException: [abort.name, abort.message, abort instanceof Error, abort instanceof DOMException, new DOMException().name],
   };
+}
+`;
+
+// gaxios reaches for `FormData` on every request, so it has to exist; and a form that exists but
+// serialises to nothing would be worse than one that is absent, so the body has to be real too.
+const formDataSource = `
+export default async function Command() {
+  const form = new FormData();
+  form.append("name", "Ada");
+  form.append("tag", "one");
+  form.append("tag", "two");
+  form.append("file", new Blob(["hi"], { type: "Text/Plain" }), "note.txt");
+  form.append("blobless", new Blob(["x"]));
+  const shape = {
+    get: form.get("tag"),
+    getAll: form.getAll("tag"),
+    has: [form.has("name"), form.has("missing")],
+    entryNames: Array.from(form.keys()),
+    file: [form.get("file").name, form.get("file").type, await form.get("file").text()],
+    defaultName: form.get("blobless").name,
+    isFile: form.get("file") instanceof File,
+  };
+  form.set("tag", "only");
+  form.delete("blobless");
+  shape.afterSet = Array.from(form.keys());
+  shape.afterSetValue = form.getAll("tag");
+
+  await fetch("https://example.test/upload", { method: "POST", body: form });
+  const explicit = new FormData();
+  explicit.append("a", "1");
+  await fetch("https://example.test/upload", { method: "POST", body: explicit, headers: { "Content-Type": "text/custom" } });
+  globalThis.__form = shape;
+}
+`;
+
+// A URLSearchParams body sets no header of its own, so the spec's derived Content-Type is the only
+// thing an OAuth token endpoint has: without it Google reads the form body as JSON and rejects it.
+const contentTypeSource = `
+export default async function Command() {
+  const url = "https://example.test/token";
+  const send = (init) => fetch(url, { method: "POST", ...init });
+  await send({ body: new URLSearchParams({ client_id: "abc" }) });
+  await send({ body: "ping" });
+  await send({ body: new Blob(["z"], { type: "Application/Zip" }) });
+  await send({ body: new Blob(["z"]) });
+  await send({ body: new URLSearchParams({ client_id: "abc" }), headers: { "Content-Type": "application/json" } });
+  await send({});
+  const request = new Request(url, { method: "POST", body: new URLSearchParams({ a: "1" }) });
+  globalThis.__contentType = request.headers.get("content-type");
 }
 `;
 
@@ -279,7 +396,23 @@ export default async function Command() {
     });
   });
 
-  globalThis.__spawn = { iterated: iterated.join(""), late };
+  // Port Manager detaches lsof to get a killable process group, then reads its output.
+  const grouped = await new Promise((resolve) => {
+    const child = spawn("/bin/echo", ["group"], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const chunks = [];
+    child.stdout.on("data", (chunk) => chunks.push(chunk.toString()));
+    child.on("close", () => resolve(chunks.join("")));
+  });
+
+  const streamed = await new Promise((resolve) => {
+    const events = [];
+    const child = spawn("/bin/sh", ["-c", "echo a; sleep 0.2; echo b"]);
+    child.on("spawn", () => events.push("spawn"));
+    child.stdout.once("data", () => events.push(child.exitCode === null ? "live" : "after-exit"));
+    child.on("close", () => resolve(events.join(",")));
+  });
+
+  globalThis.__spawn = { iterated: iterated.join(""), late, grouped, streamed };
 }
 `;
 
@@ -311,6 +444,232 @@ export default async function Command() {
     request.on("error", reject);
     request.end("ping");
   });
+}
+`;
+
+// Hide My Email hands axios a cookie jar through axios-cookiejar-support, whose http-cookie-agent
+// extends `http.Agent` at load time and hooks each request in `addRequest` — the same way this does.
+// A bundled `ws` reaches the network the way this does: upgrade, then raw frames on the socket.
+// multicast-dns drives `dgram` the way this does, down to the packet it writes.
+const dgramSource = `
+import dgram from "node:dgram";
+
+function query(name, type) {
+  const labels = name.split(".");
+  const packet = Buffer.alloc(12 + labels.reduce((total, label) => total + label.length + 1, 1) + 4);
+  packet.writeUInt16BE(0x1234, 0);
+  packet.writeUInt16BE(1, 4);
+  let offset = 12;
+  for (const label of labels) {
+    packet[offset] = label.length;
+    packet.write(label, offset + 1);
+    offset += label.length + 1;
+  }
+  packet.writeUInt16BE(type, offset + 1);
+  packet.writeUInt16BE(1, offset + 3);
+  return packet;
+}
+
+export default async function Command() {
+  const socket = dgram.createSocket({ type: "udp4" });
+  globalThis.__dgram = await new Promise((resolve) => {
+    socket.on("message", (message, rinfo) => resolve({ hex: message.toString("hex"), port: rinfo.port }));
+    socket.bind(5353, undefined, () => {
+      const service = query("_services._dns-sd._udp.local", 12);
+      socket.send(service, 0, service.length, 5353, "224.0.0.251");
+      const packet = query("homeassistant.local", 1);
+      socket.send(packet, 0, packet.length, 5353, "224.0.0.251");
+    });
+  });
+}
+`;
+
+const websocketSource = `
+import https from "node:https";
+
+export default async function Command() {
+  globalThis.__ws = await new Promise((resolve, reject) => {
+    const request = https.request({
+      host: "example.test",
+      path: "/socket",
+      headers: {
+        Connection: "Upgrade",
+        Upgrade: "websocket",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Extensions": "permessage-deflate",
+      },
+    });
+    request.on("error", reject);
+    request.on("upgrade", (response, socket) => {
+      const frames = [];
+      socket.on("data", (chunk) => frames.push(chunk.toString("hex")));
+      const payload = Buffer.from("ping", "utf8");
+      const mask = Buffer.from([1, 2, 3, 4]);
+      socket.write(
+        Buffer.concat([
+          Buffer.from([0x81, 0x80 | payload.length]),
+          mask,
+          Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4])),
+        ]),
+      );
+      socket.write(Buffer.from([0x89, 0x80, 1, 2, 3, 4]));
+      setTimeout(
+        () =>
+          resolve({
+            status: response.statusCode,
+            accept: response.headers["sec-websocket-accept"],
+            extensions: response.headers["sec-websocket-extensions"] ?? null,
+            frames,
+          }),
+        40,
+      );
+    });
+    request.end();
+  });
+}
+`;
+
+// A member `__toESM` cannot see lands as an opaque `The superclass is not a constructor`.
+const undiciSurfaceSource = `
+import diagnostics from "node:diagnostics_channel";
+import { markAsUncloneable } from "node:worker_threads";
+import { getHashes } from "node:crypto";
+
+class Ping extends Event {
+  constructor() {
+    super("ping", { cancelable: true });
+  }
+}
+
+export default async function Command() {
+  const request = diagnostics.channel("undici:request:create");
+  const idle = request.hasSubscribers;
+  const published = [];
+  diagnostics.subscribe("undici:request:create", (message, name) => published.push([message.id, name]));
+  request.publish({ id: 1 });
+
+  const target = new EventTarget();
+  const calls = [];
+  target.addEventListener("ping", () => calls.push("once"), { once: true });
+  target.addEventListener("ping", { handleEvent: (event) => { calls.push(event.target === target); event.preventDefault(); } });
+  const notCancelled = target.dispatchEvent(new Ping());
+  target.dispatchEvent(new Ping());
+
+  const { port1, port2 } = new MessageChannel();
+  port1.postMessage({ n: 1 });
+  let delivered = false;
+  const received = new Promise((resolve) => port2.addEventListener("message", (event) => resolve((delivered = true) && event.data)));
+  const early = delivered;
+  const data = await received;
+
+  globalThis.__undiciSurface = {
+    idle,
+    subscribed: request.hasSubscribers,
+    published,
+    guarded: typeof (markAsUncloneable || null),
+    hashes: getHashes(),
+    calls,
+    notCancelled,
+    data,
+    early,
+  };
+}
+`;
+
+const namespaceImportSource = `
+import * as net from "node:net";
+import * as vm from "node:vm";
+import { AsyncResource } from "node:async_hooks";
+import { Socket } from "node:net";
+
+class Tracked extends AsyncResource {
+  constructor() {
+    super("tracked");
+    this.seen = [];
+  }
+  record(value) {
+    return this.runInAsyncScope(() => {
+      this.seen.push(value);
+      return this.seen.length;
+    });
+  }
+}
+
+export default async function Command() {
+  const refusal = (fn) => {
+    try {
+      fn();
+      return "none";
+    } catch (error) {
+      return error.message;
+    }
+  };
+  const tracked = new Tracked();
+  globalThis.__namespaceImport = {
+    kinds: [typeof net.Socket, typeof Socket, typeof vm.Script, typeof AsyncResource],
+    keys: Object.keys(net).filter((key) => key !== "default"),
+    refusals: [refusal(() => new net.Socket()), refusal(() => vm.runInNewContext("1"))],
+    scope: [tracked.record("a"), tracked.record("b"), tracked.seen.join("")],
+    type: tracked.type,
+  };
+}
+`;
+
+const cookieAgentSource = `
+import * as http from "node:http";
+import * as url from "node:url";
+
+class CookieAgent extends http.Agent {
+  constructor(options) {
+    super(options);
+    this.jar = new Map();
+  }
+
+  addRequest(request, options) {
+    const target = url.format({ host: request.host, pathname: request.path, protocol: request.protocol });
+    const implicitHeader = request._implicitHeader.bind(request);
+    request._implicitHeader = () => {
+      if (this.jar.size) request.setHeader("Cookie", [...this.jar].map(([k, v]) => k + "=" + v).join("; "));
+      implicitHeader();
+    };
+    const emit = request.emit.bind(request);
+    request.emit = (event, ...args) => {
+      if (event === "response") {
+        for (const line of args[0].headers["set-cookie"] ?? []) {
+          const [pair] = line.split(";");
+          const [name, value] = pair.split("=");
+          this.jar.set(name, value);
+        }
+        this.urls.push(target);
+      }
+      return emit(event, ...args);
+    };
+    super.addRequest(request, options);
+  }
+}
+
+const send = (agent, path) =>
+  new Promise((resolve, reject) => {
+    const request = http.request("https://example.test" + path, { agent }, (response) => {
+      response.resume();
+      response.on("end", () => resolve(response));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+
+export default async function Command() {
+  const agent = new CookieAgent({ keepAlive: true });
+  agent.urls = [];
+  const first = await send(agent, "/signin?step=1");
+  await send(agent, "/account");
+  globalThis.__cookieAgent = {
+    isAgent: agent instanceof http.Agent,
+    setCookie: first.headers["set-cookie"],
+    rawHeaders: first.rawHeaders,
+    urls: agent.urls,
+  };
 }
 `;
 
@@ -394,7 +753,7 @@ export default async function Command() {
   const expiredToken = new OAuth.TokenSet({
     accessToken: "expired_token",
     expiresIn: 20,
-    createdAt: Date.now() - 30000,
+    updatedAt: new Date(Date.now() - 30000),
   });
 
   globalThis.__oauthTest = {
@@ -412,6 +771,30 @@ export default async function Command() {
   await client.removeTokens();
   const afterRemove = await client.getTokens();
   globalThis.__oauthTest.afterRemove = afterRemove;
+}
+`;
+
+// `@raycast/utils` stores the provider's raw token response, which carries no timestamp, so the
+// stored time is the only thing `isExpired()` can count from; without it a token never expired.
+const tokenExpirySource = `
+import { OAuth } from "@raycast/api";
+
+export default async function Command() {
+  const client = new OAuth.PKCEClient({ redirectMethod: OAuth.RedirectMethod.Web, providerName: "Google", providerId: "google" });
+  await client.setTokens({ access_token: "ya29.a", refresh_token: "1//r", expires_in: 3599, token_type: "Bearer" });
+  const fresh = await client.getTokens();
+  const realNow = Date.now;
+  Date.now = () => realNow() + 2 * 3600 * 1000;
+  const laterExpired = (await client.getTokens()).isExpired();
+  Date.now = realNow;
+  const unstamped = new OAuth.PKCEClient({ redirectMethod: OAuth.RedirectMethod.Web, providerName: "Old", providerId: "unstamped" });
+  const legacy = await unstamped.getTokens();
+  globalThis.__expiry = {
+    freshExpired: fresh.isExpired(),
+    freshStampedNow: fresh.updatedAt instanceof Date && Math.abs(fresh.updatedAt.getTime() - realNow()) < 5000,
+    laterExpired,
+    unstampedExpired: legacy.isExpired(),
+  };
 }
 `;
 
@@ -553,12 +936,52 @@ export async function runFixtures() {
       ".gz",
       "c",
       "darwin",
+      "idle,irq,nice,sys,user",
+      "true",
+      "true",
+      "true",
+      "true",
       "https://example.com/next?q=1",
       "a=1&b=two+words",
       "ba7816bf",
       "aGVsbG8=",
       "hello",
       "héllo",
+      "/Applications/Tinycast Beta.app",
+      "/tmp/한글.txt",
+      "/tmp/a",
+      "/tmp/a\\b",
+      "/tmp/a",
+      "/a",
+      "/tmp/a",
+      "/tmp//a",
+      "/tmp/a///b",
+      "/tmp/a/b",
+      "/C:/",
+      String.raw`file:///tmp/a?query=\keep#fragment=\keep`,
+      "https://example.com/",
+      "/a:folder/",
+      "file:///a:folder/",
+      "https://example.com/",
+      "file:///tmp/My%20Image.png",
+      "file:///tmp/a%23b.png",
+      "/tmp/a#b.png",
+      "/tmp/a?b.png",
+      "/Applications/Tinycast Beta.app",
+      "ERR_INVALID_FILE_URL_PATH",
+      "ERR_INVALID_URL",
+      "ERR_INVALID_FILE_URL_HOST",
+      "ERR_INVALID_URL_SCHEME",
+      "ERR_INVALID_ARG_TYPE",
+      "ERR_INVALID_URL",
+      "ERR_INVALID_URL",
+      "Error",
+      "false",
+      "false",
+      "true",
+      "true",
+      "ERR_INVALID_URL_SCHEME",
+      "ERR_INVALID_URL_SCHEME",
     ];
     expected.forEach((value, index) => check(`shim ${index}: ${value}`, markdown[index] === value, markdown[index]));
   });
@@ -579,13 +1002,85 @@ export async function runFixtures() {
     check("clone carries status, headers and body", equals(result.clone, [201, "application/json", '{"id":7}']), JSON.stringify(result.clone));
     check("keeps a binary body intact", equals(result.bytes, [104, 105]), JSON.stringify(result.bytes));
     check("encodes a text body as UTF-8", result.byteLength === 6, String(result.byteLength));
+    check(
+      "provides Blob bytes and text semantics",
+      equals(result.blob, [6, "text/plain", "hello!", "104,101,108,108,111,33"]),
+      JSON.stringify(result.blob),
+    );
+    check("slices Blob data and accepts it as a Response body", equals(result.slice, [3, "application/test", "ell", "hello!"]), JSON.stringify(result.slice));
+    check("creates a typed Blob from Response.blob", equals(result.responseBlob, [2, "text/custom", "hi"]), JSON.stringify(result.responseBlob));
+    check("DOMException is an Error carrying its name", equals(result.domException, ["AbortError", "stopped", true, true, "Error"]), JSON.stringify(result.domException));
   });
+
+  const sentTypes = [];
+  await run(
+    "fetch derives Content-Type from the body",
+    contentTypeSource,
+    "no-view",
+    async (harness) => {
+      check("sends every request", sentTypes.length === 6, String(sentTypes.length));
+      check("URLSearchParams implies form encoding", sentTypes[0] === "application/x-www-form-urlencoded;charset=UTF-8", String(sentTypes[0]));
+      check("a string implies text/plain", sentTypes[1] === "text/plain;charset=UTF-8", String(sentTypes[1]));
+      check("a Blob carries its own type", sentTypes[2] === "application/zip", String(sentTypes[2]));
+      check("an untyped Blob implies nothing", sentTypes[3] === undefined, String(sentTypes[3]));
+      check("an explicit header wins", sentTypes[4] === "application/json", String(sentTypes[4]));
+      check("a bodiless request implies nothing", sentTypes[5] === undefined, String(sentTypes[5]));
+      check("Request exposes the derived header", harness.call("globalThis.__contentType") === "application/x-www-form-urlencoded;charset=UTF-8");
+    },
+    {
+      stubs: {
+        "fetch.request": (args) => {
+          sentTypes.push(args[0].headers["content-type"]);
+          return { status: 200, statusText: "OK", headers: {}, url: "https://example.test/token", bodyBase64: "" };
+        },
+      },
+    },
+  );
+
+  const formPosts = [];
+  await run(
+    "FormData holds entries and serialises as multipart",
+    formDataSource,
+    "no-view",
+    async (harness) => {
+      const equals = (actual, expected) => JSON.stringify(actual) === JSON.stringify(expected);
+      const shape = harness.call("globalThis.__form");
+      check("get returns the first value", shape.get === "one", JSON.stringify(shape.get));
+      check("getAll returns every value", equals(shape.getAll, ["one", "two"]), JSON.stringify(shape.getAll));
+      check("has distinguishes present from absent", equals(shape.has, [true, false]), JSON.stringify(shape.has));
+      check("keys preserve insertion order", equals(shape.entryNames, ["name", "tag", "tag", "file", "blobless"]), JSON.stringify(shape.entryNames));
+      check("a Blob entry becomes a named File", equals(shape.file, ["note.txt", "text/plain", "hi"]), JSON.stringify(shape.file));
+      check("an unnamed Blob entry defaults to \"blob\"", shape.defaultName === "blob", String(shape.defaultName));
+      check("a Blob entry is a File instance", shape.isFile === true, String(shape.isFile));
+      check("set replaces every value in place", equals(shape.afterSet, ["name", "tag", "file"]), JSON.stringify(shape.afterSet));
+      check("set collapses duplicates to one", equals(shape.afterSetValue, ["only"]), JSON.stringify(shape.afterSetValue));
+
+      const [posted, explicit] = formPosts;
+      const boundary = (posted.type ?? "").split("boundary=")[1];
+      check("derives multipart with a boundary", !!boundary && posted.type.startsWith("multipart/form-data; boundary="), String(posted.type));
+      check("the body uses the header's boundary", posted.body.startsWith(`--${boundary}\r\n`), posted.body.slice(0, 60));
+      check("a string part carries only its name", posted.body.includes(`Content-Disposition: form-data; name="name"\r\n\r\nAda`), posted.body.slice(0, 200));
+      check("a File part carries filename and type", posted.body.includes(`name="file"; filename="note.txt"\r\nContent-Type: text/plain`), posted.body);
+      check("the body ends with the closing boundary", posted.body.endsWith(`--${boundary}--\r\n`), posted.body.slice(-40));
+      check("an explicit Content-Type still wins", explicit.type === "text/custom", String(explicit.type));
+    },
+    {
+      stubs: {
+        "fetch.request": (args) => {
+          formPosts.push({ type: args[0].headers["content-type"], body: Buffer.from(args[0].bodyBase64 ?? "", "base64").toString() });
+          return { status: 200, statusText: "OK", headers: {}, url: "https://example.test/upload", bodyBase64: "" };
+        },
+      },
+    },
+  );
 
   await run("spawn's stdout survives a late reader", spawnSource, "no-view", async (harness) => {
     const result = harness.call("globalThis.__spawn");
     check("async iteration collects stdout", result?.iterated === "hello\n", JSON.stringify(result?.iterated));
     check("a listener attached after exit still gets it", result?.late === "world\n", JSON.stringify(result?.late));
-  });
+    check("a detached child that pipes stdout is still awaited", result?.grouped === "group\n", JSON.stringify(result?.grouped));
+    check("output streams before exit, after spawn", result?.streamed === "spawn,live", JSON.stringify(result?.streamed));
+  }, { settle: 800 });
 
   const httpSpecs = [];
   await run(
@@ -617,6 +1112,121 @@ export async function runFixtures() {
             url: "https://example.test/data",
             bodyBase64: Buffer.from('{"ok":true}').toString("base64"),
           };
+        },
+      },
+    },
+  );
+
+  const socketOpens = [];
+  const lookups = [];
+  await run(
+    "dgram answers an mDNS query out of the resolver",
+    dgramSource,
+    "no-view",
+    async (harness) => {
+      const result = harness.call("globalThis.__dgram");
+      check("resolves the name the query asked for", lookups[0] === "homeassistant.local", String(lookups[0]));
+      check("leaves a service question alone", lookups.length === 1, JSON.stringify(lookups));
+      check("answers the query it was sent", result?.hex?.startsWith("123484000001000100000000"), String(result?.hex));
+      check("names the host in the answer", result?.hex?.includes("0d686f6d65617373697374616e74056c6f63616c00"), String(result?.hex));
+      check("carries the address as an A record", result?.hex?.endsWith("00010001000000780004c0a801e2"), String(result?.hex));
+    },
+    {
+      stubs: {
+        "dns.resolve": (args) => {
+          lookups.push(args[0]);
+          return ["192.168.1.226"];
+        },
+      },
+    },
+  );
+
+  const socketSends = [];
+  let socketReads = 0;
+  let socketPings = 0;
+  await run(
+    "a websocket upgrade hands back a socket that frames both ways",
+    websocketSource,
+    "no-view",
+    async (harness) => {
+      const result = harness.call("globalThis.__ws");
+      check("opens the native socket over wss", socketOpens[0]?.url === "wss://example.test/socket", JSON.stringify(socketOpens[0]?.url));
+      check("drops the handshake headers", socketOpens[0]?.headers?.upgrade === undefined, JSON.stringify(socketOpens[0]?.headers));
+      check("reports the upgrade", result?.status === 101, String(result?.status));
+      check("answers the key the way a server would", result?.accept === "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", String(result?.accept));
+      check("never accepts an extension", result?.extensions === null, String(result?.extensions));
+      check("unmasks an outgoing frame", socketSends[0]?.text === "ping", JSON.stringify(socketSends[0]));
+      check("frames an incoming message", result?.frames?.[0] === "8104706f6e67", JSON.stringify(result?.frames));
+      check("asks the peer before answering a ping", socketPings === 1, String(socketPings));
+      check("pongs once the peer answered", result?.frames?.includes("8a00"), JSON.stringify(result?.frames));
+    },
+    {
+      stubs: {
+        "websocket.open": (args) => {
+          socketOpens.push(args[0]);
+          return { id: 7, protocol: "" };
+        },
+        "websocket.send": (args) => {
+          socketSends.push(args[0]);
+          return null;
+        },
+        "websocket.ping": () => {
+          socketPings++;
+          return null;
+        },
+        // The second read never settles, which is what an idle socket looks like from JS.
+        "websocket.receive": () => (socketReads++ === 0 ? { type: "text", text: "pong" } : new Promise(() => {})),
+      },
+    },
+  );
+
+  const cookieSpecs = [];
+  const cookies = ["a=1; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/", "b=2; Path=/"];
+  await run("undici's load-time surface is real", undiciSurfaceSource, "no-view", async (harness) => {
+    const result = harness.call("globalThis.__undiciSurface");
+    check("a fresh channel has no subscribers", result?.idle === false, JSON.stringify(result));
+    check("a subscriber receives what the channel publishes", JSON.stringify(result?.published) === JSON.stringify([[1, "undici:request:create"]]), JSON.stringify(result?.published));
+    check("a channel reports its subscriber", result?.subscribed === true, String(result?.subscribed));
+    check("markAsUncloneable is a function, so an || guard is moot", result?.guarded === "function", String(result?.guarded));
+    check("getHashes lists the digests the host computes", JSON.stringify(result?.hashes) === JSON.stringify(["md5", "sha1", "sha256", "sha384", "sha512"]), JSON.stringify(result?.hashes));
+    check("a once listener fires once and handleEvent sees the target", JSON.stringify(result?.calls) === JSON.stringify(["once", true, true]), JSON.stringify(result?.calls));
+    check("preventDefault cancels a cancelable event", result?.notCancelled === false, String(result?.notCancelled));
+    check("a port delivers a clone after posting returns", result?.data?.n === 1 && result?.early === false, JSON.stringify(result));
+  });
+
+  await run("a namespace import keeps the shim's named members", namespaceImportSource, "no-view", async (harness) => {
+    const result = harness.call("globalThis.__namespaceImport");
+    const kinds = JSON.stringify(result?.kinds);
+    check("every member survives the own-key snapshot", kinds === JSON.stringify(["function", "function", "function", "function"]), kinds);
+    check("net enumerates its exports", result?.keys?.includes("Socket") && result.keys.includes("createConnection"), JSON.stringify(result?.keys));
+    check("an unsupported member still refuses by name", result?.refusals?.[0]?.startsWith("net.Socket is not supported"), JSON.stringify(result?.refusals));
+    check("a refusal names the member that was called", result?.refusals?.[1]?.startsWith("vm.runInNewContext is not supported"), JSON.stringify(result?.refusals));
+    check("AsyncResource runs the callback in place", JSON.stringify(result?.scope) === JSON.stringify([1, 2, "ab"]), JSON.stringify(result?.scope));
+    check("AsyncResource keeps its type", result?.type === "tracked", String(result?.type));
+  });
+
+  await run(
+    "an http.Agent subclass carries cookies between requests",
+    cookieAgentSource,
+    "no-view",
+    async (harness) => {
+      const result = harness.call("globalThis.__cookieAgent");
+      const setCookie = JSON.stringify(result?.setCookie);
+      const rawHeaders = JSON.stringify(result?.rawHeaders);
+      const urls = JSON.stringify(result?.urls);
+      const sent = cookieSpecs[1]?.headers;
+      check("http.Agent survives esbuild's namespace import", result?.isAgent === true, JSON.stringify(result));
+      check("splits a folded Set-Cookie without cutting its Expires date", setCookie === JSON.stringify(cookies), setCookie);
+      check("rawHeaders repeats the name per cookie", rawHeaders === JSON.stringify(cookies.flatMap((c) => ["set-cookie", c])), rawHeaders);
+      check("url.format builds the request URL from its parts", result?.urls?.[0] === "https://example.test/signin%3Fstep=1", urls);
+      check("the second request sends every cookie the first received", sent?.cookie === "a=1; b=2", JSON.stringify(sent));
+    },
+    {
+      stubs: {
+        "fetch.request": (args) => {
+          cookieSpecs.push(args[0]);
+          const headers = cookieSpecs.length === 1 ? { "set-cookie": cookies.join(", ") } : {};
+          return { status: 200, statusText: "OK", headers, url: args[0].url, bodyBase64: "" };
         },
       },
     },
@@ -659,6 +1269,29 @@ export async function runFixtures() {
     check("removeTokens cleans up tokens", result?.afterRemove === undefined || result?.afterRemove === null);
   });
 
+  const storedTokens = new Map([["unstamped", JSON.stringify({ access_token: "ya29.old", expires_in: 3599 })]]);
+  await run(
+    "a stored token expires from the time it was stored",
+    tokenExpirySource,
+    "no-view",
+    async (harness) => {
+      const result = harness.call("globalThis.__expiry");
+      check("a just-stored token is not expired", result?.freshExpired === false, JSON.stringify(result));
+      check("setTokens stamps updatedAt with the storage time", result?.freshStampedNow === true, JSON.stringify(result));
+      check("the same token two hours later is expired", result?.laterExpired === true, JSON.stringify(result));
+      check("a stored token with no timestamp counts as expired", result?.unstampedExpired === true, JSON.stringify(result));
+    },
+    {
+      stubs: {
+        "oauth.setTokens": (args) => {
+          storedTokens.set(args[0], args[1]);
+          return null;
+        },
+        "oauth.getTokens": (args) => storedTokens.get(args[0]) ?? null,
+      },
+    },
+  );
+
   await run("no-view command", noViewSource, "no-view", async (harness) => {
     check("ran to completion", harness.state.finished === true);
     check("ran the body", harness.call("globalThis.__ranNoView") === true);
@@ -675,6 +1308,48 @@ export async function runFixtures() {
     const dump = describeTree(harness.state.trees.at(-1));
     check("finishes loading", dump.includes("isLoading=false"), dump);
     check("renders the resolved items", dump.includes("alpha") && dump.includes("beta"));
+  });
+
+  await run("Menu bar hooks, alternates and async actions", `
+    import { MenuBarExtra } from "@raycast/api";
+    import { useEffect, useState } from "react";
+    function Alternate() {
+      const [title] = useState("Alternate");
+      return <MenuBarExtra.Item title={title} onAction={() => { globalThis.clicked = "alternate"; }} />;
+    }
+    export default function Command() {
+      const [loading, setLoading] = useState(true);
+      const [title, setTitle] = useState("Before");
+      useEffect(() => { setLoading(false); }, []);
+      return <MenuBarExtra title={title} isLoading={loading} tooltip="Usage">
+        <MenuBarExtra.Section title="Providers">
+          <MenuBarExtra.Item title="Refresh" alternate={<Alternate />} onAction={async (event) => {
+            await new Promise(resolve => setTimeout(resolve, 40));
+            globalThis.clicked = event.type;
+            setTitle("After");
+          }} />
+        </MenuBarExtra.Section>
+      </MenuBarExtra>;
+    }
+  `, "menu-bar", async (harness) => {
+    const tree = harness.state.trees.at(-1);
+    const root = findNode(tree, "MenuBarExtra");
+    const item = findNode(tree, "MenuBarExtra.Item");
+    check("menu-bar mounts hooks", root?.props.isLoading === false && !harness.state.finished);
+    check("alternate mounts through a slot", item?.props.alternate?.props.title === "Alternate");
+    check("alternate retains callback", typeof item?.props.alternate?.props.onAction?.$fn === "string");
+    harness.call(`__tinycast.dispatch("s1", ${JSON.stringify(item.props.onAction.$fn)}, '[{"type":"right-click"}]', true)`);
+    check("async action keeps session alive", !harness.state.finished);
+    await wait(100);
+    check("action receives click type", harness.call("globalThis.clicked") === "right-click");
+    check("async action completes", harness.state.finished);
+    check("action updates menu title", findNode(harness.state.trees.at(-1), "MenuBarExtra")?.props.title === "After");
+  });
+
+  await run("Menu bar can remove its item", `
+    export default function Command() { return null; }
+  `, "menu-bar", async (harness) => {
+    check("null commits an empty screen", harness.state.trees.length > 0 && !findNode(harness.state.trees.at(-1), "MenuBarExtra"));
   });
 
   console.log("\n▶ Errors surface instead of crashing");

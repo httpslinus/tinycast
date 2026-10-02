@@ -13,6 +13,7 @@ final class KeePassCoordinator {
     var isShowingForm: Bool { !isUnlocked || isShowingAutoLockSettings }
     var password = ""
     var folder = ""
+    private(set) var formFocusStep = 0
     private unowned let core: AppCore
     private let clipboard: KeePassClipboard
     @ObservationIgnored private var loadTask: Task<Void, Never>?
@@ -56,6 +57,10 @@ final class KeePassCoordinator {
             core.palette.prepare(mode: .keepass)
         } else { core.paletteCoordinator.showPalette(mode: .keepass) }
         touch()
+    }
+
+    func advanceFormFocus(backwards: Bool) {
+        formFocusStep += backwards ? -1 : 1
     }
 
     var folders: [String] { Array(Set(entries.map(\.group).filter { !$0.isEmpty })).sorted() }

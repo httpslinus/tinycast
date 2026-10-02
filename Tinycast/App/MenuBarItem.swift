@@ -5,7 +5,7 @@ struct MenuBarLabel: View {
     let appName: String
 
     var body: some View {
-        Image(systemName: "macwindow.on.rectangle")
+        Image("MenuBarIcon")
             .accessibilityLabel(appName)
     }
 }
@@ -17,8 +17,11 @@ struct MenuBarMenu: View {
         Button("Open \(appName)") {
             AppCore.shared.paletteCoordinator.showPalette(mode: .launcher)
         }
-        Button("Clipboard History") {
-            AppCore.shared.paletteCoordinator.showPalette(mode: .clipboard)
+        // Read through Observation, so switching the feature off takes the row with it.
+        if AppCore.shared.settings.clipboardEnabled {
+            Button("Clipboard History") {
+                AppCore.shared.paletteCoordinator.showPalette(mode: .clipboard)
+            }
         }
         Divider()
         Button("Settings...") { AppCore.shared.settingsCoordinator.showSettings() }
